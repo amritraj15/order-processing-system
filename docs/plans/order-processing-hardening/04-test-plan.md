@@ -4,11 +4,19 @@ This plan maps the five assignment requirements to existing automated tests and
 the [live-demo runbook](05-live-demo.md). Coverage listed here describes test
 intent; it does not mean the tests have passed.
 
-**Execution status, 2026-10-03:** local arithmetic, order, quote service, worker,
-configuration and logging tests passed. Full build, auth/HTTP tests, PostgreSQL
-integration and Docker smoke remain blocked by the environment. See the
-[recorded evidence](../../reviews/order-processing-hardening/verification/README.md).
-The live demo below has not yet been executed.
+**Latest execution status, 2026-10-03:** the user's native PostgreSQL 18.4 run
+passed build/vet and the complete unit/HTTP/auth/database integration suite with
+`-count=1 -race -tags=integration`. The worker test-fixture UUID scan was corrected;
+`TestPendingSkipsLockedRowsAndRollsBackFailedBatch` and every other test in the full
+rerun passed. This includes idempotency contention, timeouts, rollback, version-4
+upgrades and the nonempty 000004 downgrade guard. The 2026-10-04 native deployed smoke passed with automatic processing
+([evidence](../../reviews/order-processing-hardening/verification/native-smoke-20261004/README.md)).
+On 2026-10-04 IST, full Docker acceptance passed all 22 stages, including migration
+up/down/up, integration, smoke and cleanup ([evidence](../../reviews/order-processing-hardening/verification/acceptance-20261003T183917Z-2cf6c389/summary.json)).
+Only the actual five-minute demo remains pending. See the [native evidence](../../reviews/order-processing-hardening/verification/native-postgres-20261003/README.md).
+
+Older execution notes below retain historical blockers; this latest native result
+supersedes them for the cases explicitly listed as passed.
 
 ## Requirement coverage
 
@@ -113,7 +121,7 @@ Do not attach raw auth responses, passwords or tokens.
 
 | Sign-off item | Result to enter | Required evidence |
 | --- | --- | --- |
-| Full automated acceptance | NOT RUN / PASS / FAIL / BLOCKED | Runner summary and logs; no required stage skipped. |
+| Full automated acceptance | PASS — 2026-10-04 IST | All 22 stages passed; see the acceptance evidence above. |
 | R1 create | NOT RUN / PASS / FAIL | 201, two items, USD 3495, PENDING. |
 | R2 retrieve | NOT RUN / PASS / FAIL | Same ID/data; unknown/foreign 404. |
 | R3a transitions | NOT RUN / PASS / FAIL | Ordered lifecycle, manual processing, forbidden/invalid transitions. |

@@ -1,0 +1,125 @@
+{
+  "run_id": "20261003T183917Z-2cf6c389",
+  "status": "passed",
+  "checks": [
+    {
+      "name": "go-version",
+      "exit_code": 0,
+      "seconds": 0.007
+    },
+    {
+      "name": "docker-access",
+      "exit_code": 0,
+      "seconds": 0.113
+    },
+    {
+      "name": "compose-version",
+      "exit_code": 0,
+      "seconds": 0.034
+    },
+    {
+      "name": "dependency-tidy",
+      "exit_code": 0,
+      "seconds": 3.626
+    },
+    {
+      "name": "module-verification",
+      "exit_code": 0,
+      "seconds": 0.375
+    },
+    {
+      "name": "format",
+      "exit_code": 0,
+      "seconds": 0.031
+    },
+    {
+      "name": "build",
+      "exit_code": 0,
+      "seconds": 3.533
+    },
+    {
+      "name": "vet",
+      "exit_code": 0,
+      "seconds": 0.857
+    },
+    {
+      "name": "race",
+      "exit_code": 0,
+      "seconds": 12.832
+    },
+    {
+      "name": "postgres-start",
+      "exit_code": 0,
+      "seconds": 16.491
+    },
+    {
+      "name": "postgres-port",
+      "exit_code": 0,
+      "seconds": 0.049
+    },
+    {
+      "name": "migration-up",
+      "exit_code": 0,
+      "seconds": 0.538
+    },
+    {
+      "name": "migration-down-5",
+      "exit_code": 0,
+      "seconds": 0.053
+    },
+    {
+      "name": "migration-down-4",
+      "exit_code": 0,
+      "seconds": 0.143
+    },
+    {
+      "name": "migration-down-3",
+      "exit_code": 0,
+      "seconds": 0.054
+    },
+    {
+      "name": "migration-down-2",
+      "exit_code": 0,
+      "seconds": 0.033
+    },
+    {
+      "name": "migration-down-1",
+      "exit_code": 0,
+      "seconds": 0.032
+    },
+    {
+      "name": "migration-up-again",
+      "exit_code": 0,
+      "seconds": 0.064
+    },
+    {
+      "name": "integration",
+      "exit_code": 0,
+      "seconds": 15.148
+    },
+    {
+      "name": "docker-smoke",
+      "exit_code": 0,
+      "seconds": 33.503
+    },
+    {
+      "name": "smoke-cleanup",
+      "exit_code": 0,
+      "seconds": 0.059
+    },
+    {
+      "name": "postgres-cleanup",
+      "exit_code": 0,
+      "seconds": 0.214
+    }
+  ],
+  "cleanup": "passed",
+  "manifests_before": {
+    "go.mod": "d838e6a380df435aef3ba380e97152aa1d34bb356f5f60bb4b43c1b24d94ab06",
+    "go.sum": "e172df5eaf70bd883d8acc5b04dcbefe97ff9186c235a6e43ed2d2543a2ed02f"
+  },
+  "manifests_after": {
+    "go.mod": "d838e6a380df435aef3ba380e97152aa1d34bb356f5f60bb4b43c1b24d94ab06",
+    "go.sum": "e172df5eaf70bd883d8acc5b04dcbefe97ff9186c235a6e43ed2d2543a2ed02f"
+  }
+}

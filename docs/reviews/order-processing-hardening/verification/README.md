@@ -1,8 +1,22 @@
 # Hardening verification — 2026-10-03
 
-Implementation is present. **Full acceptance remains blocked**, not passed.
-Engineering and overview approvals are recorded; no further approval is needed to
-continue verification when the environment can run it.
+**Latest result: full automated acceptance PASS**, 2026-10-04 IST.
+[Runner summary](acceptance-20261003T183917Z-2cf6c389/summary.json) records 22 successful stages:
+dependencies/verification, formatting, build, vet, race tests, disposable PostgreSQL,
+all five migration downs and re-up, integration, Docker smoke and both cleanups.
+The recorded before/after module manifest hashes are identical and match the
+current files. **B1 is closed** for the requested automated acceptance scope.
+
+[Native integration](native-postgres-20261003/README.md) and
+[native deployed smoke](native-smoke-20261004/README.md) also passed. The actual
+five-minute live demo remains unverified; fast smoke does not measure that cadence.
+Results were executed by the user on the local host and checked against saved
+artifacts. Earlier sandbox failures remain historical evidence, not current blockers.
+
+The checks below preserve the **earlier agent-environment evidence**. Their DNS
+and PostgreSQL blockers do not describe the user's now-working native setup.
+The agent's own loopback restriction remains; the native pass is supported by the
+user's retained log, not an agent-executed database run.
 
 ## Passing checks
 
@@ -39,15 +53,16 @@ HTTP/auth/readiness, migration/adoption/rollback, quote concurrency/rollback and
 cleanup EXPLAIN tests are present for execution in a capable environment. Their
 existence is not execution evidence.
 
-## Finding disposition
+## Current finding disposition
 
-- **B1 remains open:** full build/runtime verification and final `go mod tidy` are pending.
+- **B1 closed:** the full acceptance runner passed; dependency tidy/verification, build/vet, race/integration, migration round trip, Docker smoke and cleanup are recorded.
 - **B2:** adapter assertions, wrapped operation errors and contextual logging are
-  implemented in source; full adapter compilation/auth/HTTP tests remain unverified.
+  implemented; full build and auth/HTTP tests passed in the acceptance run.
 - **R0 addressed:** approved overview/design, root guidance and current tracker exist.
 - **R1–R6:** source mitigations and regression tests are added. Local arithmetic,
-  quote/use-case and worker tests pass; DB restart/currency/concurrency, auth/HTTP
-  and smoke evidence remains pending under B1.
+  quote/use-case, worker, currency/concurrency, auth/HTTP, migration and smoke
+  regressions passed. Production failover and the five-minute live demo are not
+  implied by this acceptance result.
 
 ## Continue verification
 
@@ -77,7 +92,7 @@ full dependency/build/vet/race/migration/integration/EXPLAIN and Docker smoke, a
 retains redacted logs plus before/after module manifests. Its Python and shell
 syntax checks pass.
 
-The latest [attempt](acceptance-20261003T131746Z-9ac01b21/summary.json) remains **blocked** at Docker access.
+An earlier [attempt](acceptance-20261003T131746Z-9ac01b21/summary.json) was blocked at Docker access; the successful run linked at the top supersedes that blocker.
 Go and Docker Compose version checks pass; Docker socket access is denied.
 A separate dependency retry still fails on proxy DNS, and localhost PostgreSQL
 port 5432 does not respond. No remote executor is connected or specified, so no

@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "scope": "Deployed native API smoke with automatic worker processing",
+  "source": "User-supplied terminal transcript, 2026-10-04 Asia/Kolkata; not agent-executed",
+  "api_url": "http://localhost:8090",
+  "command": "SMOKE_EXPECT_WORKER=1 python3 scripts/smoke.py",
+  "readiness": {
+    "database": "ok",
+    "worker": "ok",
+    "status": "ok",
+    "last_failure_at": null
+  },
+  "result": "API smoke test passed: auth, catalog, orders, idempotency, isolation, transitions, cancellation, pagination, logout",
+  "fixture": {
+    "currency": "INR",
+    "rate": "2",
+    "source": "test-fixture"
+  },
+  "limits": [
+    "Fast worker smoke does not establish the actual five-minute cadence.",
+    "Smoke permits cancellation or a conflict when the worker wins; controlled cancellation is covered by the passing integration suite.",
+    "No Docker image/Compose acceptance result supplied."
+  ],
+  "remaining": [
+    "Docker acceptance (make acceptance)",
+    "Actual five-minute live demo"
+  ]
+}

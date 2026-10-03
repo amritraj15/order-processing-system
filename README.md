@@ -37,8 +37,12 @@ Use the [local test setup](TESTING.md) for complete paths with Docker, native
 PostgreSQL, or unit tests without a database.
 The [architecture discussion](architecture.md) provides design details.
 The remaining planning and review files retain decision history and verification
-evidence; they are optional background for a reviewer. Recorded local passes are
-limited to the named packages; full acceptance remains pending.
+evidence; they are optional background for a reviewer. **Full automated acceptance
+passed on 2026-10-04 (IST)**: all 22 checks, including dependency verification,
+build/vet/race tests, migration up/down/up, PostgreSQL integration, Docker smoke
+and cleanup. Native integration and deployed native smoke passed as well.
+The actual five-minute live demo remains to be performed.
+[Acceptance evidence](docs/reviews/order-processing-hardening/verification/acceptance-20261003T183917Z-2cf6c389/summary.json).
 
 ## Known limitations and next steps
 
@@ -50,7 +54,7 @@ limited to the named packages; full acceptance remains pending.
 | Commerce workflows | Inventory reservation, payments, refunds and external fulfillment are outside scope. Adding them requires explicit business rules, retry-safe integrations and transactional event publication. |
 | Capacity and operations | Throughput at 10k orders/s is unmeasured. Add load tests, pending-age/throughput/DB-pool metrics and tracing before choosing caches, replicas, queues or partitioning. Auth limits are currently per-process. |
 | Availability | The supplied deployment uses one PostgreSQL instance. Add tested backup/restore and HA/failover before making availability commitments. |
-| Verification | Cancellation-race and concurrent-consumer tests exist in the [repository suite](db/gorm/order_repository_integration_test.go); full DB/container execution remains pending. Use [TESTING.md](TESTING.md) to reproduce checks. |
+| Verification | Full automated acceptance, native integration and native deployed smoke passed. Only the actual five-minute live demo remains unverified. Use [TESTING.md](TESTING.md) to reproduce checks. |
 
 Repeated cancellation returns 200 with the owned CANCELLED order, without changing
 its timestamp. Cancellation of PROCESSING, SHIPPED or DELIVERED still returns 409.
@@ -129,9 +133,11 @@ replace admission controls or load testing. They do not cover unkeyed requests.
 (items and quote), **2 of 2 request forms (100%)**. This is not 100% test coverage,
 production traffic coverage, or a guarantee for items requests without a key.
 The frequency of the multiple-key quote case is **unmeasured**; no percentage or
-performance benefit is claimed. Service tests pass locally; new PostgreSQL/HTTP
-integration cases still require execution in an accessible environment. See the
+performance benefit is claimed. Service and idempotency PostgreSQL/HTTP cases passed in the user-supplied native
+run. The complete native integration rerun also passed, including the worker fixture. See the
 [architecture decision](architecture.md#decision-durable-idempotency-records).
+
+The [native API smoke record](docs/reviews/order-processing-hardening/verification/native-smoke-20261004/README.md) captures the successful deployed HTTP check.
 
 ## Run with Docker
 

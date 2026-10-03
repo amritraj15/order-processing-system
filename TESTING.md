@@ -16,10 +16,15 @@ Use the pinned module versions; do not downgrade dependencies to match a cache.
 Go commands use readonly manifests after `go mod tidy`, which may update
 `go.mod`/`go.sum`; review those changes before committing.
 
-**Execution status:** this is a runnable plan, not a claim that the full routes
-have passed. The latest environment could run selected local tests but could not
-download all dependencies or access Docker/PostgreSQL. See the
-[verification record](docs/reviews/order-processing-hardening/verification/README.md).
+**Execution status, 2026-10-04 IST:** full Docker acceptance passed all 22 stages,
+including the complete migration round trip, PostgreSQL integration, Docker API
+smoke and cleanup. Native race/integration and deployed native smoke also passed.
+The actual five-minute live demo remains unverified.
+[Acceptance evidence](docs/reviews/order-processing-hardening/verification/acceptance-20261003T183917Z-2cf6c389/summary.json).
+
+If running individual commands in interactive zsh, omit inline `# comments` or
+first enable `setopt INTERACTIVE_COMMENTS`. Use `set -o pipefail` before piping
+tests to `tee`; otherwise the pipeline can report success after a test failure.
 
 ## A — Full checks with Docker
 

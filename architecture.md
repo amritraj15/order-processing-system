@@ -6,11 +6,13 @@ be used during an architecture interview or the live demo. Source review date:
 PostgreSQL database**. Its main correctness mechanisms are database transactions,
 conditional state changes, immutable purchase snapshots and bounded batch work.
 
-Implementation and verification are separate: selected local tests have passed;
-full dependency/build/HTTP/PostgreSQL/Docker acceptance remains blocked in the
-recorded environment. No production throughput, availability target or code
-coverage percentage has been measured. See the
-[verification record](docs/reviews/order-processing-hardening/verification/README.md).
+The user-supplied native PostgreSQL 18.4 run passed build/vet, the full unit/HTTP
+race suite and the full database integration rerun, including the corrected
+worker test fixture. The native deployed API smoke also passed with automatic
+worker processing. Full Docker acceptance also passed on 2026-10-04 IST; only the five-minute demo
+remains pending. No production throughput, availability target or code coverage percentage
+has been measured. See the
+[native verification record](docs/reviews/order-processing-hardening/verification/native-postgres-20261003/README.md).
 
 ## 1. Requirements and design boundaries
 
@@ -324,8 +326,10 @@ current status, unkeyed compatibility and fingerprint stability. PostgreSQL test
 cover concurrent same-key requests, transaction rollback including quote
 consumption, durable replay and guarded migration rollback; HTTP integration
 covers normalization, response codes, owner scope and multiple keys per quote.
-Those database/HTTP checks remain unverified until dependency and DB access are
-available. Run the [local acceptance plan](TESTING.md) before claiming full coverage.
+Those idempotency database/HTTP checks passed in the user-supplied native run,
+including timeouts and both migration upgrade variants. The complete native
+integration rerun and subsequent full Docker acceptance also passed, including
+the corrected worker fixture. Use the [local acceptance plan](TESTING.md) to reproduce.
 
 ### State machine and cancellation race
 
@@ -633,7 +637,7 @@ the five-minute interval is not a proven five-minute end-to-end SLA.
 
 | Stage | Change / decision | Evidence needed before proceeding |
 | --- | --- | --- |
-| 1 — Establish a working baseline | Finish full acceptance, then measure one API/worker process and PostgreSQL with representative carts/history. | API p50/p95/p99 latency, errors, order throughput, DB pool waits, locks, CPU/I/O and oldest pending age. No baseline numbers are available yet. |
+| 1 — Establish a working baseline | Automated acceptance passed; next measure one API/worker process and PostgreSQL with representative carts/history. | API p50/p95/p99 latency, errors, order throughput, DB pool waits, locks, CPU/I/O and oldest pending age. No baseline numbers are available yet. |
 | 2 — Tune the current deployment | Tune DB resources, indexes/query plans and processing batch size; make connection limits configurable if needed. | Confirm that throughput improves without making API latency or lock waits unacceptable. More goroutines alone cannot increase DB capacity. |
 | 3 — Add API replicas | Use a load balancer and shared primary database; consistent JWT/region settings, readiness routing and global ingress limits. | Budget up to `20 × replica_count` application connections with room for migrations/admin/monitoring; load and revocation consistency tests. A different deployment configuration is required. |
 | 4 — Separate scheduling/work capacity | Add independent API/worker modes and a dedicated scheduler or coordinated schedule if global cadence matters. | Failure/restart tests and a clearly defined timing contract. Do not merely add a worker: the current API always embeds one, so it must be disabled/extracted as part of this change. |
@@ -662,15 +666,15 @@ The following matrix explains the architectural risks covered by those tests.
 | Order domain | Multiple item snapshots, exact total 3495, UUIDv7/time values, empty/unknown/duplicate items, zero/negative quantities, line/aggregate overflow, permitted predecessor mapping. [Tests](domain/order/order_test.go). | Local race-enabled tests passed. |
 | Money and quote use case | Identity conversion, JPY/KWD precision, half-even ties, invalid rates/overflow; quote snapshot, TTL cap, foreign owner, expired quote, missing rate, replay after cleanup. [Money](domain/money/money_test.go), [quote service](service/quote/service_test.go). | Local tests passed; fake repositories do not establish DB locking behavior. |
 | Worker/configuration/health state | Full/short/empty batches, cancellation/failure, no work before initial tick in the tested cancellation case, two real short-interval ticker events and shutdown, health boundaries/recovery, concurrent health reads, configuration bounds. [Worker tests](service/processing/worker_test.go), [status](service/processing/status_test.go), [config](configs/config_test.go). | Local race-enabled tests passed, including the recurring-tick follow-up. No real five-minute timing result claimed. |
-| Auth and HTTP boundary | Registration/login/logout, invalid JWT/current role, inactive/missing-user verification, password bounds, limiter capacity/concurrency/forwarded-header behavior, JSON/content-type errors and log redaction. [JWT](service/auth/jwt/client_test.go), [middleware](api/rest/middleware/rate_limit_test.go), [server](api/rest/server_test.go). | Source present; full dependency-based execution blocked. |
-| Request UUID guards | Malformed/missing/nil product IDs and malformed/nil quote IDs return 422 with both the production binder and a decoding-only binder, before service access. [Handler tests](api/rest/v1/order_handler_test.go). | Added for review follow-up; requires HTTP dependencies to execute. |
-| Requirements through API + PostgreSQL | Roles/ownership, catalog, multi-item order, totals, skip/cancel rules, processing/delivery, filtering/cursors, quote creation/replay, logout. [Scenario](api/rest/routes/routes_integration_test.go). | Source present; live DB execution blocked. |
-| Create retry safety | Service replay/conflict/owner scope and fingerprint tests; DB concurrency, rollback, quote aliases and key retention. [Service tests](service/order/place_handler_test.go), [DB tests](db/gorm/idempotency_integration_test.go). | Service race tests passed. DB/HTTP execution blocked by missing dependencies and database access. |
-| Order persistence/concurrency | Snapshot persistence after catalog change, transactional rollback, concurrent batches/cutoff, 20 cancellation races, skipping locked rows, failed batch rollback, pending index EXPLAIN. [Tests](db/gorm/order_repository_integration_test.go). | Source present; live DB execution blocked. |
-| Transition timestamps | A transition's `updated_at` matches database transaction time, independent of application timestamp generation. [Repository tests](db/gorm/order_repository_integration_test.go). | Added for review follow-up; requires live DB execution. |
-| Pricing persistence/concurrency | Eight concurrent submissions producing one order, replay after cleanup, currency mismatch, serialized initialization/rate imports, legacy adoption, expiry after lock wait, rollback if consumption fails. [Tests](db/gorm/pricing_integration_test.go). | Source present; live DB execution blocked. |
-| Migrations and cleanup | Migration round trip/legacy preservation, down guards, quote-expiry cleanup index EXPLAIN. [Tests](db/gorm/migrations_integration_test.go). | Source present; live DB execution blocked. |
-| Deployed API smoke and live timing | Docker smoke exercises auth/catalog/orders/quotes and automatic processing on a five-second tick. Live runbook verifies two real five-minute ticks and terminal states. | Smoke blocked; live runbook prepared but not executed. |
+| Auth and HTTP boundary | Registration/login/logout, invalid JWT/current role, inactive/missing-user verification, password bounds, limiter capacity/concurrency/forwarded-header behavior, JSON/content-type errors and log redaction. [JWT](service/auth/jwt/client_test.go), [middleware](api/rest/middleware/rate_limit_test.go), [server](api/rest/server_test.go). | Passed in the user-supplied native race run. |
+| Request UUID guards | Malformed/missing/nil product IDs and malformed/nil quote IDs return 422 with both the production binder and a decoding-only binder, before service access. [Handler tests](api/rest/v1/order_handler_test.go). | Passed in the user-supplied native race run. |
+| Requirements through API + PostgreSQL | Roles/ownership, catalog, multi-item order, totals, skip/cancel rules, processing/delivery, filtering/cursors, quote creation/replay, logout. [Scenario](api/rest/routes/routes_integration_test.go). | Passed in the user-supplied native PostgreSQL race run. |
+| Create retry safety | Service replay/conflict/owner scope and fingerprint tests; DB concurrency, rollback, quote aliases and key retention. [Service tests](service/order/place_handler_test.go), [DB tests](db/gorm/idempotency_integration_test.go). | Service, HTTP and PostgreSQL cases passed in the user-supplied native race run. |
+| Order persistence/concurrency | Snapshot persistence after catalog change, transactional rollback, concurrent batches/cutoff, 20 cancellation races, skipping locked rows, failed batch rollback, pending index EXPLAIN. [Tests](db/gorm/order_repository_integration_test.go). | All cases passed in the user-supplied native rerun after fixing the test-fixture UUID scan. |
+| Transition timestamps | A transition's `updated_at` matches database transaction time, independent of application timestamp generation. [Repository tests](db/gorm/order_repository_integration_test.go). | Passed in the user-supplied native PostgreSQL race run. |
+| Pricing persistence/concurrency | Eight concurrent submissions producing one order, replay after cleanup, currency mismatch, serialized initialization/rate imports, legacy adoption, expiry after lock wait, rollback if consumption fails. [Tests](db/gorm/pricing_integration_test.go). | Passed in the user-supplied native PostgreSQL race run. |
+| Migrations and cleanup | Migration round trip/legacy preservation, down guards, quote-expiry cleanup index EXPLAIN. [Tests](db/gorm/migrations_integration_test.go). | Passed in the user-supplied native PostgreSQL race run. |
+| Deployed API smoke and live timing | Docker smoke exercises auth/catalog/orders/quotes and automatic processing on a five-second tick. Live runbook verifies two real five-minute ticks and terminal states. | Native deployed smoke and full Docker acceptance passed; actual five-minute timing remains unverified. [Acceptance evidence](docs/reviews/order-processing-hardening/verification/acceptance-20261003T183917Z-2cf6c389/summary.json). [Smoke evidence](docs/reviews/order-processing-hardening/verification/native-smoke-20261004/README.md). |
 
 The controlled API integration test is designed to verify successful pending cancellation. The
 fast Docker smoke accepts 200 or 409 for cancellation because its worker can win
@@ -715,10 +719,10 @@ The following are **future work**, not claims about the delivered implementation
 
 | Priority | Enhancement | Trigger / validation |
 | --- | --- | --- |
-| Immediate | Resolve environment blockers and finish full acceptance/manifests. | Required before declaring implementation fully verified. |
+| Live presentation | Run the actual five-minute demonstration and retain its timing evidence. | Full automated acceptance/manifests already passed; the fast smoke is not a five-minute measurement. |
 | Before promising load targets | Add metrics/tracing, representative load/soak tests and explicit latency/backlog objectives. | Use measured bottlenecks; no numerical throughput promise yet. |
 | Before multi-replica/global scheduling commitments | Define global cadence, separate worker lifecycle if needed, use DB time for cutoff, and coordinate scheduling/recovery. | Test staggered starts, repeated restarts, clock skew and loss of a scheduler. |
-| Before broad client retries | Finish full acceptance for the implemented idempotency contract and require callers to reuse keys. | Exercise lost responses, concurrent conflicting reuse and crash recovery on a real database. |
+| Before broad client retries | Require callers to reuse keys and retain the passing idempotency regressions in CI. | Exercise lost responses, concurrent conflicting reuse and crash recovery on a real database. |
 | When support/audit history is required | Add transactional order status history covering customer, admin and worker changes. | Verify rollback leaves no history entry and concurrent attempts record only the committed transition. |
 | Before production exposure | Set TLS/secret rotation/ingress policy, shared auth limits, DB connection/deadline budgets and tested backup/restore procedures. | Deployment and failure tests; local Compose is not an HA deployment. |
 | As cleanup volume grows | Bound revoked-token purge and monitor quote cleanup backlog. | Verify bounded transactions under high expiration volume. |
@@ -736,4 +740,4 @@ The following are **future work**, not claims about the delivered implementation
 | What happens if the customer retries? | Same customer/key and payload return the original order with 200; conflicting reuse returns 409. Quote ID replay also works without a key. Unkeyed items-only requests can duplicate. |
 | What happens when the region changes? | Obtain a new regional quote. Existing catalog denomination, quotes and accepted orders retain their snapshots. |
 | Can it scale horizontally? | DB coordination supports concurrent application instances, but shared limits, connection budgets, deployment configuration and global scheduling semantics need additional work. |
-| What is actually proven? | The linked local tests have passed; full runtime/concurrency/migration acceptance and real demo timing are still pending. |
+| What is actually proven? | The full native unit/integration race suite passed, including the fixed worker fixture, idempotency, timeouts and migration guards. Native deployed smoke and full Docker acceptance also passed; the actual five-minute demo remains pending. |

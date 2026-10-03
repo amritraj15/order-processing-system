@@ -280,8 +280,13 @@ func TestPendingSkipsLockedRowsAndRollsBackFailedBatch(t *testing.T) {
 	}
 	defer tx.Rollback()
 	var id uuid.UUID
-	if err := tx.Raw("SELECT id FROM orders WHERE id = ? FOR UPDATE", locked.ID).Scan(&id).Error; err != nil {
+	// Use database/sql's Scanner path: GORM's top-level Scan treats UUID's
+	// underlying [16]byte as an array destination instead of a scalar UUID.
+	if err := tx.Raw("SELECT id FROM orders WHERE id = ? FOR UPDATE", locked.ID).Row().Scan(&id); err != nil {
 		t.Fatal(err)
+	}
+	if id != locked.ID {
+		t.Fatal("locked a different order")
 	}
 	if n, err := repo.ProcessBatch(ctx, time.Now(), 500); err != nil || n != 1 {
 		t.Fatalf("locked row was not skipped: %d %v", n, err)
