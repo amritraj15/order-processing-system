@@ -93,6 +93,36 @@ func TestOrderTransactionSnapshotsAndStatus(t *testing.T) {
 		t.Fatal("failed order left an orphan parent")
 	}
 }
+
+func TestOrderTransitionUsesDatabaseTime(t *testing.T) {
+	db := testutil.PostgreSQL(t)
+	customer, product := fixtures(t, db)
+	ctx := context.Background()
+	service := &orderservice.Service{UOW: &database.UnitOfWork{DB: db}}
+	o, err := service.HandleCreate(ctx, orderservice.CreateCommand{CustomerID: customer, Items: []order.ItemInput{{ProductID: product.ID, Quantity: 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Transaction(func(tx *orm.DB) error {
+		var databaseTime time.Time
+		if err := tx.Raw("SELECT now()").Scan(&databaseTime).Error; err != nil {
+			return err
+		}
+		repo := &database.OrderRepository{DB: tx}
+		updated, err := repo.Transition(ctx, o.ID, nil, order.Pending, order.Processing)
+		if err != nil {
+			return err
+		}
+		if !updated.UpdatedAt.Equal(databaseTime) {
+			t.Errorf("updated_at %s differs from database transaction time %s", updated.UpdatedAt, databaseTime)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPendingBatchesConcurrencyCutoffAndQueryPlan(t *testing.T) {
 	db := testutil.PostgreSQL(t)
 	customer, _ := fixtures(t, db)

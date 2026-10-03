@@ -72,3 +72,56 @@ func TestRunWaitsForFirstTick(t *testing.T) {
 		t.Fatal("worker ran before first tick")
 	}
 }
+
+type tickProcessor struct{ attempts chan time.Time }
+
+func (p *tickProcessor) ProcessBatch(ctx context.Context, cutoff time.Time, _ int) (int, error) {
+	select {
+	case p.attempts <- cutoff:
+		return 0, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+func TestRunProcessesRecurringTicksAndStops(t *testing.T) {
+	processor := &tickProcessor{attempts: make(chan time.Time, 2)}
+	worker := &Worker{Processor: processor, Interval: 25 * time.Millisecond, BatchSize: 500, Logger: quiet()}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("worker did not stop after cancellation")
+		}
+	})
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	var previous time.Time
+	for i := 0; i < 2; i++ {
+		select {
+		case cutoff := <-processor.attempts:
+			if !cutoff.After(previous) {
+				t.Fatal("recurring runs did not advance their cutoff")
+			}
+			previous = cutoff
+		case <-deadline.C:
+			t.Fatal("worker did not process two real ticker events")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-deadline.C:
+		t.Fatal("worker did not stop after processing ticks")
+	}
+	if snapshot := worker.Status.Snapshot(time.Now()); snapshot.State != "stopped" || snapshot.Running {
+		t.Fatalf("unexpected worker state after shutdown: %+v", snapshot)
+	}
+}

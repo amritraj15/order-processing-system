@@ -27,6 +27,13 @@ successful cancellation or a 409 when the worker wins. That smoke outcome alone
 does not prove successful cancellation; retain the controlled integration and
 live-demo evidence too.
 
+Review follow-up adds `TestCreateRejectsInvalidUUIDs` in the
+[handler tests](../../../api/rest/v1/order_handler_test.go), including a binder
+that skips validation, and `TestOrderTransitionUsesDatabaseTime` in the repository
+tests. `TestRunProcessesRecurringTicksAndStops` observes two actual 25ms ticker
+events and cancellation using a recording processor. It verifies scheduling
+without PostgreSQL and does not replace the five-minute live timing check.
+
 ## Approved supporting behavior
 
 | Area | Automated evidence to run | Live coverage |

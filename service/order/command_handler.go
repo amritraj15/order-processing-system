@@ -43,7 +43,7 @@ func (s *Service) HandleCreate(ctx context.Context, cmd CreateCommand) (*domain.
 func (s *Service) HandleStatus(ctx context.Context, cmd StatusCommand) (*domain.Order, error) {
 	previous, err := domain.PreviousStatus(cmd.Status)
 	if err != nil {
-		return nil, fmt.Errorf("create order: %w", err)
+		return nil, fmt.Errorf("update order status: %w", err)
 	}
 	return s.Repo.Transition(ctx, cmd.ID, nil, previous, cmd.Status)
 }

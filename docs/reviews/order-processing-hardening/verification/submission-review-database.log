@@ -1,0 +1,24 @@
+Command: ["go", "test", "-mod=readonly", "-count=1", "-race", "-tags=integration", "./db/gorm", "-run", "^TestOrderTransitionUsesDatabaseTime$"]
+Exit: 1
+go: downloading github.com/golang-migrate/migrate/v4 v4.19.1
+go: downloading gorm.io/driver/postgres v1.6.0
+go: downloading gorm.io/gorm v1.31.1
+go: downloading golang.org/x/crypto v0.57.0
+# order_management/db/gorm
+db/gorm/db.go:9:2: github.com/golang-migrate/migrate/v4@v4.19.1: Get "https://proxy.golang.org/github.com/golang-migrate/migrate/v4/@v/v4.19.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/db/gorm
+db/gorm/db.go:10:2: github.com/golang-migrate/migrate/v4@v4.19.1: Get "https://proxy.golang.org/github.com/golang-migrate/migrate/v4/@v/v4.19.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/db/gorm
+db/gorm/db.go:11:2: github.com/golang-migrate/migrate/v4@v4.19.1: Get "https://proxy.golang.org/github.com/golang-migrate/migrate/v4/@v/v4.19.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/db/gorm
+db/gorm/db.go:12:2: gorm.io/driver/postgres@v1.6.0: Get "https://proxy.golang.org/gorm.io/driver/postgres/@v/v1.6.0.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/db/gorm
+db/gorm/db.go:13:2: gorm.io/gorm@v1.31.1: Get "https://proxy.golang.org/gorm.io/gorm/@v/v1.31.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/db/gorm
+db/gorm/pricing_repository.go:9:2: gorm.io/gorm@v1.31.1: Get "https://proxy.golang.org/gorm.io/gorm/@v/v1.31.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/db/gorm
+db/gorm/db.go:14:2: gorm.io/gorm@v1.31.1: Get "https://proxy.golang.org/gorm.io/gorm/@v/v1.31.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/db/gorm
+domain/user/user.go:9:2: golang.org/x/crypto@v0.57.0: Get "https://proxy.golang.org/golang.org/x/crypto/@v/v0.57.0.zip": dial tcp: lookup proxy.golang.org: no such host
+FAIL	order_management/db/gorm [setup failed]
+FAIL

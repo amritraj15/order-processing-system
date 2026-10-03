@@ -50,9 +50,9 @@ func (h *QuoteHandler) Create(c *echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
-	inputs := make([]order.ItemInput, len(req.Items))
-	for i, v := range req.Items {
-		inputs[i] = order.ItemInput{ProductID: uuid.MustParse(v.ProductID), Quantity: v.Quantity}
+	inputs, err := parseItemInputs(req.Items)
+	if err != nil {
+		return err
 	}
 	q, err := h.Service.HandleCreate(c.Request().Context(), service.CreateCommand{CustomerID: uuid.MustParse(middleware.Claims(c).UserID), Region: req.Region, Items: inputs})
 	if err != nil {

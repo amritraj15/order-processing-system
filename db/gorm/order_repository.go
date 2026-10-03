@@ -122,7 +122,7 @@ func (r *OrderRepository) List(ctx context.Context, filter order.Filter) (shared
 func (r *OrderRepository) Transition(ctx context.Context, id uuid.UUID, customer *uuid.UUID, previous, next order.Status) (*order.Order, error) {
 	var result *order.Order
 	err := r.DB.WithContext(ctx).Transaction(func(tx *orm.DB) error {
-		res := scoped(tx.Model(&orderRow{}), customer).Where("id = ? AND status = ?", id, previous).Updates(map[string]any{"status": next, "updated_at": time.Now().UTC()})
+		res := scoped(tx.Model(&orderRow{}), customer).Where("id = ? AND status = ?", id, previous).Updates(map[string]any{"status": next, "updated_at": orm.Expr("now()")})
 		if res.Error != nil {
 			return res.Error
 		}

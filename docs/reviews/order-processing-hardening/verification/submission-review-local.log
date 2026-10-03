@@ -1,0 +1,9 @@
+Command: ["go", "test", "-mod=readonly", "-count=1", "-race", "./domain/order", "./domain/money", "./service/order", "./service/quote", "./service/processing", "./configs", "./internal/logging"]
+Exit: 0
+ok  	order_management/domain/order	1.472s
+ok  	order_management/domain/money	1.815s
+?   	order_management/service/order	[no test files]
+ok  	order_management/service/quote	2.160s
+ok  	order_management/service/processing	2.908s
+ok  	order_management/configs	2.501s
+ok  	order_management/internal/logging	3.200s

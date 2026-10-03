@@ -4,9 +4,37 @@ A standalone Go backend for customer orders, an admin-managed product catalog,
 and automatic processing. It uses Echo v5, domain/application/persistence layers,
 JWT Bearer sessions, bcrypt passwords, and a token denylist.
 
-Read the [architecture design discussion](architecture.md) for the Go
-decision, HLD/LLD diagrams, API and data design, test coverage, failure handling,
-and the scaling/distributed-system tradeoffs.
+## Requirements mapping
+
+All endpoints below use the `/api/v1` prefix and a Bearer token.
+
+| Assignment requirement | Endpoint / behavior | Access |
+| --- | --- | --- |
+| Create an order with multiple items | `POST /orders` with `items`; returns 201 and PENDING. | Customer |
+| Retrieve order details | `GET /orders/{id}` | Owning customer or admin |
+| Update order status | `PATCH /orders/{id}/status`; PENDING → PROCESSING → SHIPPED → DELIVERED. | Admin only |
+| Automatically process PENDING every five minutes | Embedded worker; first run five minutes after process startup, then every five minutes. | Automatic |
+| List all orders, optionally by status | `GET /orders?status=PENDING`; omit status for all accessible orders, follow `next_cursor` for further pages. | Customer's own orders; admin sees all |
+| Cancel only a PENDING order | `POST /orders/{id}/cancel`; 200 if pending, otherwise 409. | Owning customer only |
+
+`CANCELLED` is an additional terminal status used to record cancellation. Admins
+advance order status; customers place and cancel their own orders. Authentication,
+catalog pricing and regional quotes are approved extensions to the assignment.
+The core items-only order flow uses base currency and needs no FX-rate setup.
+
+For the quickest executable review, run `go mod tidy` then `make smoke-docker`
+on a host with Go, Python 3 and Docker access. It provisions the admin, customers,
+products and isolated database automatically, exercises the APIs, and cleans up.
+It uses a **five-second** worker interval; the
+[live-demo runbook](docs/plans/order-processing-hardening/05-live-demo.md) covers
+the actual five-minute timing. Full verification is `make acceptance`.
+
+Start with this README and the
+[requirements/test matrix](docs/plans/order-processing-hardening/04-test-plan.md).
+The [architecture discussion](architecture.md) provides design details.
+The remaining planning and review files retain decision history and verification
+evidence; they are optional background for a reviewer. Recorded local passes are
+limited to the named packages; full acceptance remains pending.
 
 ## Run with Docker
 
@@ -119,6 +147,10 @@ least eight characters); emails are trimmed and lowercased.
 The embedded worker first runs five minutes after startup, then every five
 minutes. It processes PENDING orders created by the run's start time, regardless
 of their age. Orders created during the drain wait for the next run.
+With a healthy idle worker, an order normally waits between approximately zero
+and five minutes for the next tick. This is a periodic schedule, not a five-minute
+delay measured from each order's creation; there is no immediate startup run.
+Backlog, locks, failures or restarts can make the wait longer.
 
 The queue is a PostgreSQL partial index on `(created_at, id)` with predicate
 `status = 'PENDING'`. The worker uses that literal predicate, oldest-first
@@ -166,6 +198,7 @@ make run
 ```sh
 make fmt-check
 make vet
+# Unit/HTTP tests only: no PostgreSQL required; pinned Go dependencies are required.
 make test
 
 # The integration suite creates/drops only unique test schemas in this DB.
@@ -177,6 +210,12 @@ TEST_DATABASE_URL='postgres://orders:orders_local@127.0.0.1:5432/orders?sslmode=
 # Uses an isolated Compose project and removes only that project's test volume.
 make smoke-docker
 ```
+
+PostgreSQL tests are guarded by `//go:build integration`; plain `go test ./...`
+and `make test` exclude them. `make integration` enables the tag and requires
+`TEST_DATABASE_URL`. The worker suite includes a real ticker test with a short
+interval, while the Docker smoke exercises that scheduler against PostgreSQL.
+Neither substitutes for the two real five-minute ticks in the live demo.
 
 Unit tests cover snapshot totals, invalid orders, arithmetic overflow, password
 limits, auth/token validation and revocation, JSON validation/error envelopes,

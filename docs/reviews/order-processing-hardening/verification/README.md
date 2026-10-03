@@ -82,3 +82,31 @@ Go and Docker Compose version checks pass; Docker socket access is denied.
 A separate dependency retry still fails on proxy DNS, and localhost PostgreSQL
 port 5432 does not respond. No remote executor is connected or specified, so no
 external environment was used and no full-suite pass is claimed.
+
+## Submission review follow-up
+
+The working tree was rechecked after fixing status error context, adding explicit
+request UUID parsing and switching manual transition timestamps to PostgreSQL
+time. [Local race-enabled tests](submission-review-local.log) passed, including
+`TestRunProcessesRecurringTicksAndStops`, which observes two real 25ms ticker
+events and cancellation. This does not measure five-minute cadence or DB behavior.
+The order service package compiled but has no behavioral test files.
+
+Exact local-cache invocation from the project root:
+
+```sh
+env GOMODCACHE="$PWD/.cache/gomod" GOCACHE="$PWD/.cache/gobuild" \
+  GOPROXY=file:///Users/amritraj/go/pkg/mod/cache/download GOSUMDB=off \
+  go test -mod=readonly -count=1 -race \
+  ./domain/order ./domain/money ./service/order ./service/quote \
+  ./service/processing ./configs ./internal/logging
+```
+
+That module-cache path is specific to the original machine. On a connected host,
+use normal module verification and `make acceptance` to reproduce full acceptance.
+Earlier logs describe their recorded source/check scope, not a full pass of later
+changes. These fresh [HTTP](submission-review-http.log) and
+[database](submission-review-database.log) attempts failed at dependency loading
+because proxy DNS is unavailable. The new invalid-UUID and database-clock tests
+therefore remain unexecuted. Format, whitespace and documentation-link checks pass.
+PostgreSQL tests are excluded from plain `go test ./...` by the `integration` tag.

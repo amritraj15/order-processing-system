@@ -20,6 +20,19 @@ type itemRequest struct {
 	ProductID string `json:"product_id" validate:"required,uuid"`
 	Quantity  int64  `json:"quantity" validate:"gt=0"`
 }
+
+func parseItemInputs(items []itemRequest) ([]order.ItemInput, error) {
+	inputs := make([]order.ItemInput, len(items))
+	for i, item := range items {
+		id, err := uuid.Parse(item.ProductID)
+		if err != nil || id == uuid.Nil {
+			return nil, shared.ErrInvalid
+		}
+		inputs[i] = order.ItemInput{ProductID: id, Quantity: item.Quantity}
+	}
+	return inputs, nil
+}
+
 type createOrderRequest struct {
 	QuoteID string        `json:"quote_id" validate:"omitempty,uuid"`
 	Items   []itemRequest `json:"items" validate:"omitempty,min=1,max=100,dive"`
@@ -108,8 +121,8 @@ func (h *OrderHandler) Create(c *echo.Context) error {
 		if req.Items != nil {
 			return c.JSON(422, map[string]any{"error": "quote_id and items are mutually exclusive", "details": map[string]string{"reason": "quote_required_fields"}})
 		}
-		id := uuid.MustParse(req.QuoteID)
-		if id == uuid.Nil {
+		id, parseErr := uuid.Parse(req.QuoteID)
+		if parseErr != nil || id == uuid.Nil {
 			return shared.ErrInvalid
 		}
 		o, replay, err = h.Service.HandleCreateFromQuote(c.Request().Context(), service.CreateFromQuoteCommand{CustomerID: customer, QuoteID: id})
@@ -117,9 +130,9 @@ func (h *OrderHandler) Create(c *echo.Context) error {
 		if len(req.Items) == 0 {
 			return shared.ErrInvalid
 		}
-		inputs := make([]order.ItemInput, len(req.Items))
-		for i, item := range req.Items {
-			inputs[i] = order.ItemInput{ProductID: uuid.MustParse(item.ProductID), Quantity: item.Quantity}
+		inputs, parseErr := parseItemInputs(req.Items)
+		if parseErr != nil {
+			return parseErr
 		}
 		o, err = h.Service.HandleCreate(c.Request().Context(), service.CreateCommand{CustomerID: customer, Items: inputs})
 	}

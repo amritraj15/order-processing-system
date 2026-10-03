@@ -1,0 +1,26 @@
+Command: ["go", "test", "-mod=readonly", "-count=1", "-race", "./api/rest/..."]
+Exit: 1
+go: downloading github.com/labstack/echo/v5 v5.2.1
+go: downloading golang.org/x/crypto v0.57.0
+go: downloading github.com/go-playground/validator/v10 v10.30.3
+# order_management/api/rest
+api/rest/server.go:14:2: github.com/labstack/echo/v5@v5.2.1: Get "https://proxy.golang.org/github.com/labstack/echo/v5/@v/v5.2.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/api/rest
+api/validator/validator.go:8:2: github.com/go-playground/validator/v10@v10.30.3: Get "https://proxy.golang.org/github.com/go-playground/validator/v10/@v/v10.30.3.zip": dial tcp: lookup proxy.golang.org: no such host
+FAIL	order_management/api/rest [setup failed]
+# order_management/api/rest/middleware
+api/rest/server.go:14:2: github.com/labstack/echo/v5@v5.2.1: Get "https://proxy.golang.org/github.com/labstack/echo/v5/@v/v5.2.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/api/rest/middleware
+domain/user/user.go:9:2: golang.org/x/crypto@v0.57.0: Get "https://proxy.golang.org/golang.org/x/crypto/@v/v0.57.0.zip": dial tcp: lookup proxy.golang.org: no such host
+FAIL	order_management/api/rest/middleware [setup failed]
+# order_management/api/rest/routes
+api/rest/server.go:14:2: github.com/labstack/echo/v5@v5.2.1: Get "https://proxy.golang.org/github.com/labstack/echo/v5/@v/v5.2.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/api/rest/routes
+domain/user/user.go:9:2: golang.org/x/crypto@v0.57.0: Get "https://proxy.golang.org/golang.org/x/crypto/@v/v0.57.0.zip": dial tcp: lookup proxy.golang.org: no such host
+FAIL	order_management/api/rest/routes [setup failed]
+# order_management/api/rest/v1
+api/rest/server.go:14:2: github.com/labstack/echo/v5@v5.2.1: Get "https://proxy.golang.org/github.com/labstack/echo/v5/@v/v5.2.1.zip": dial tcp: lookup proxy.golang.org: no such host
+# order_management/api/rest/v1
+domain/user/user.go:9:2: golang.org/x/crypto@v0.57.0: Get "https://proxy.golang.org/golang.org/x/crypto/@v/v0.57.0.zip": dial tcp: lookup proxy.golang.org: no such host
+FAIL	order_management/api/rest/v1 [setup failed]
+FAIL
