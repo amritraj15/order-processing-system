@@ -47,6 +47,11 @@ without PostgreSQL and does not replace the five-minute live timing check.
 
 ## Execution order
 
+For complete local prerequisites and setup, use [the local test guide](../../../TESTING.md).
+It includes full Docker acceptance, native PostgreSQL without Docker, and a
+database-free unit-test path. The commands below are the shorter reference for
+an already prepared environment.
+
 Run from the repository root on a host with Go 1.26, Python 3, Make, dependency
 downloads, Docker Compose and permission to run PostgreSQL 18 containers. Reserve
 the Docker smoke ports (18080/15432 by default); the live demo uses 18081/15433.

@@ -4,7 +4,6 @@
 .cache/
 bin/
 coverage.out
-surge/
 .DS_Store
 __pycache__/
 *.py[cod]

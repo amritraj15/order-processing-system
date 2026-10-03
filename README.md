@@ -31,6 +31,8 @@ the actual five-minute timing. Full verification is `make acceptance`.
 
 Start with this README and the
 [requirements/test matrix](docs/plans/order-processing-hardening/04-test-plan.md).
+Use the [local test setup](TESTING.md) for complete paths with Docker, native
+PostgreSQL, or unit tests without a database.
 The [architecture discussion](architecture.md) provides design details.
 The remaining planning and review files retain decision history and verification
 evidence; they are optional background for a reviewer. Recorded local passes are
@@ -174,6 +176,10 @@ duration, and failures. `/health` and `/api/v1/health` are liveness probes;
 `/api/v1/ready` checks schema version 3, initialized catalog settings and local worker health. It exposes safe last-attempt/success/failure timestamps. Startup grace is two intervals; failed runs are unhealthy immediately, stale success after two intervals is unhealthy, and a successful run (including an empty queue) restores readiness. Each drain has a one-interval deadline. Quote cleanup is bounded to 500 rows per tick, eligible 24 hours after expiry; cleanup failures are logged separately.
 
 ## Local development and tests
+
+Follow [TESTING.md](TESTING.md) for step-by-step local setup **with or without
+Docker**, including migrations, integration tests, API smoke, expected results
+and cleanup.
 
 For requirement-by-requirement coverage, see the
 [test plan](docs/plans/order-processing-hardening/04-test-plan.md). The
