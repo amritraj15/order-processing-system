@@ -4,7 +4,7 @@ A standalone Go backend for customer orders, an admin-managed product catalog,
 and automatic processing. It uses Echo v5, domain/application/persistence layers,
 JWT Bearer sessions, bcrypt passwords, and a token denylist.
 
-Read the [architecture design discussion](docs/architecture.md) for the Go
+Read the [architecture design discussion](architecture.md) for the Go
 decision, HLD/LLD diagrams, API and data design, test coverage, failure handling,
 and the scaling/distributed-system tradeoffs.
 

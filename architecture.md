@@ -10,7 +10,7 @@ Implementation and verification are separate: selected local tests have passed;
 full dependency/build/HTTP/PostgreSQL/Docker acceptance remains blocked in the
 recorded environment. No production throughput, availability target or code
 coverage percentage has been measured. See the
-[verification record](reviews/order-processing-hardening/verification/README.md).
+[verification record](docs/reviews/order-processing-hardening/verification/README.md).
 
 ## 1. Requirements and design boundaries
 
@@ -50,9 +50,9 @@ Go's language and concurrency design are described in the [Go FAQ](https://go.de
 Cancellation/deadline propagation follows the [context contract](https://pkg.go.dev/context).
 The limitations of dynamic race checking are described in the
 [Go race detector documentation](https://go.dev/doc/articles/race_detector).
-The concrete uses above are visible in [bootstrap](../internal/bootstrap/server.go),
-[money conversion](../domain/money/money.go), [Dockerfile](../Dockerfile) and
-[Makefile](../Makefile).
+The concrete uses above are visible in [bootstrap](internal/bootstrap/server.go),
+[money conversion](domain/money/money.go), [Dockerfile](Dockerfile) and
+[Makefile](Makefile).
 
 ### Why not Java, .NET, Node.js, Python or Rust?
 
@@ -92,7 +92,7 @@ flowchart LR
     APP --> LOG[Structured stdout logs]
 ```
 
-The deployment in [Compose](../docker-compose.yml) starts PostgreSQL, runs the
+The deployment in [Compose](docker-compose.yml) starts PostgreSQL, runs the
 migration command, then starts the API after migrations succeed. API and worker
 share a process and connection pool. The database stores orders, catalog, users,
 token revocations, rates and quotes. The CLI is another invocation of the same
@@ -123,15 +123,15 @@ writes, prefer forward repair. Migration rollback tests use disposable data.
 
 | Layer / source | Responsibility and key contracts |
 | --- | --- |
-| [HTTP routes](../api/rest/routes/routes.go) and [handlers](../api/rest/v1/order_handler.go) | Route registration, DTO validation, role/owner scope, response formatting and HTTP status selection. |
-| [Order service](../service/order/command_handler.go) | `HandleCreate`, `HandleStatus`, `HandleCancel`; read handlers delegate scoped queries. |
-| [Quote service](../service/quote/service.go) and [quote consumption](../service/order/quote_handler.go) | Select region/rate, freeze a quote, then atomically consume it or replay its existing order. |
-| [Domain order](../domain/order/order.go) and [money](../domain/money/money.go) | Pure item/total validation, previous-state mapping, conversion, precision and overflow checks. No HTTP or GORM dependency. |
-| [Unit-of-work interface](../service/uow/uow.go) | Execute a callback using repositories bound to one transaction; read database time. |
-| [Persistence](../db/gorm/order_repository.go) | Implement repositories, scoped reads, inserts, conditional updates and worker batch SQL. |
-| [Auth adapter](../service/auth/jwt/client.go) | Password verification, JWT issuance/validation, current-user lookup and logout revocation. |
-| [Worker](../service/processing/worker.go) | Schedule drains, enforce batch/run bounds and publish [local health](../service/processing/status.go). |
-| [Bootstrap](../internal/bootstrap/server.go) and [configuration](../configs/config.go) | Construct dependencies, validate settings, start/stop HTTP and worker, configure readiness. |
+| [HTTP routes](api/rest/routes/routes.go) and [handlers](api/rest/v1/order_handler.go) | Route registration, DTO validation, role/owner scope, response formatting and HTTP status selection. |
+| [Order service](service/order/command_handler.go) | `HandleCreate`, `HandleStatus`, `HandleCancel`; read handlers delegate scoped queries. |
+| [Quote service](service/quote/service.go) and [quote consumption](service/order/quote_handler.go) | Select region/rate, freeze a quote, then atomically consume it or replay its existing order. |
+| [Domain order](domain/order/order.go) and [money](domain/money/money.go) | Pure item/total validation, previous-state mapping, conversion, precision and overflow checks. No HTTP or GORM dependency. |
+| [Unit-of-work interface](service/uow/uow.go) | Execute a callback using repositories bound to one transaction; read database time. |
+| [Persistence](db/gorm/order_repository.go) | Implement repositories, scoped reads, inserts, conditional updates and worker batch SQL. |
+| [Auth adapter](service/auth/jwt/client.go) | Password verification, JWT issuance/validation, current-user lookup and logout revocation. |
+| [Worker](service/processing/worker.go) | Schedule drains, enforce batch/run bounds and publish [local health](service/processing/status.go). |
+| [Bootstrap](internal/bootstrap/server.go) and [configuration](configs/config.go) | Construct dependencies, validate settings, start/stop HTTP and worker, configure readiness. |
 
 The domain declares repository abstractions; persistence implements them. Services
 depend on those abstractions and the unit of work. Bootstrap supplies concrete
@@ -151,9 +151,9 @@ implementations. HTTP request DTOs and GORM row structs remain outside the domai
 | `quote_items` | Quote FK, position, product FK, source and converted prices | Unique product per quote; checked line totals; delete with parent quote. |
 | `denylisted_tokens` | SHA-256 token hash and expiry | Primary key makes revocation insertion repeatable; raw token is not persisted here. |
 
-See the [initial schema](../db/migrations/000001_initial.up.sql),
-[pricing migration](../db/migrations/000002_pricing.up.sql) and
-[quote migration](../db/migrations/000003_order_quotes.up.sql).
+See the [initial schema](db/migrations/000001_initial.up.sql),
+[pricing migration](db/migrations/000002_pricing.up.sql) and
+[quote migration](db/migrations/000003_order_quotes.up.sql).
 
 `orders.quote_id` intentionally has no FK to the temporary quote table: the
 accepted order and its retry identity survive quote cleanup. Conversely,
@@ -297,7 +297,8 @@ sequenceDiagram
     participant S as Order service
     participant DB as PostgreSQL
     C->>S: POST orders with quote_id
-    S->>DB: Begin transaction; find order by quote and owner
+    S->>DB: Begin transaction
+    S->>DB: Find order by quote and owner
     alt Existing order
         DB-->>S: Durable order snapshot
         S->>DB: Finish transaction
@@ -306,7 +307,8 @@ sequenceDiagram
         S->>DB: Lock owned quote FOR UPDATE
         DB-->>S: Quote and consumed state
         alt Another request consumed it while this request waited
-            S->>DB: Read consumed order; finish transaction
+            S->>DB: Read consumed order
+            S->>DB: Finish transaction
             S-->>C: 200, same order ID
         else Unconsumed quote
             S->>DB: Read clock_timestamp after lock acquisition
@@ -314,7 +316,9 @@ sequenceDiagram
                 S->>DB: Roll back
                 S-->>C: 409 quote_expired
             else Quote valid
-                S->>DB: Insert order and items; mark quote consumed; commit
+                S->>DB: Insert order and items
+                S->>DB: Mark quote consumed
+                S->>DB: Commit transaction
                 S-->>C: 201, new order ID
             end
         end
@@ -331,8 +335,8 @@ expiry; durable order snapshots retain the accepted terms.
 
 ## 5. API contract
 
-The authoritative field schemas are in [OpenAPI](openapi.yaml); route registration
-is in [routes.go](../api/rest/routes/routes.go). All paths below use `/api/v1`
+The authoritative field schemas are in [OpenAPI](docs/openapi.yaml); route registration
+is in [routes.go](api/rest/routes/routes.go). All paths below use `/api/v1`
 unless explicitly shown otherwise. Protected routes use `Authorization: Bearer`.
 
 | Method / path | Access | Request / success |
@@ -487,20 +491,20 @@ to demonstrate the current assignment.
 
 ## 9. Coverage and test cases
 
-The detailed [test plan](plans/order-processing-hardening/04-test-plan.md) maps
-every requirement to source tests and the [live demo](plans/order-processing-hardening/05-live-demo.md).
+The detailed [test plan](docs/plans/order-processing-hardening/04-test-plan.md) maps
+every requirement to source tests and the [live demo](docs/plans/order-processing-hardening/05-live-demo.md).
 The following matrix explains the architectural risks covered by those tests.
 
 | Area | Existing cases | Evidence status |
 | --- | --- | --- |
-| Order domain | Multiple item snapshots, exact total 3495, UUIDv7/time values, empty/unknown/duplicate items, zero/negative quantities, line/aggregate overflow, permitted predecessor mapping. [Tests](../domain/order/order_test.go). | Local race-enabled tests passed. |
-| Money and quote use case | Identity conversion, JPY/KWD precision, half-even ties, invalid rates/overflow; quote snapshot, TTL cap, foreign owner, expired quote, missing rate, replay after cleanup. [Money](../domain/money/money_test.go), [quote service](../service/quote/service_test.go). | Local tests passed; fake repositories do not establish DB locking behavior. |
-| Worker/configuration/health state | Full/short/empty batches, cancellation/failure, no work before initial tick in the tested cancellation case, health boundaries/recovery, concurrent health reads, configuration bounds. [Worker tests](../service/processing/worker_test.go), [status](../service/processing/status_test.go), [config](../configs/config_test.go). | Local tests passed; no real five-minute timing result claimed. |
-| Auth and HTTP boundary | Registration/login/logout, invalid JWT/current role, inactive/missing-user verification, password bounds, limiter capacity/concurrency/forwarded-header behavior, JSON/content-type errors and log redaction. [JWT](../service/auth/jwt/client_test.go), [middleware](../api/rest/middleware/rate_limit_test.go), [server](../api/rest/server_test.go). | Source present; full dependency-based execution blocked. |
-| Requirements through API + PostgreSQL | Roles/ownership, catalog, multi-item order, totals, skip/cancel rules, processing/delivery, filtering/cursors, quote creation/replay, logout. [Scenario](../api/rest/routes/routes_integration_test.go). | Source present; live DB execution blocked. |
-| Order persistence/concurrency | Snapshot persistence after catalog change, transactional rollback, concurrent batches/cutoff, 20 cancellation races, skipping locked rows, failed batch rollback, pending index EXPLAIN. [Tests](../db/gorm/order_repository_integration_test.go). | Source present; live DB execution blocked. |
-| Pricing persistence/concurrency | Eight concurrent submissions producing one order, replay after cleanup, currency mismatch, serialized initialization/rate imports, legacy adoption, expiry after lock wait, rollback if consumption fails. [Tests](../db/gorm/pricing_integration_test.go). | Source present; live DB execution blocked. |
-| Migrations and cleanup | Migration round trip/legacy preservation, down guards, quote-expiry cleanup index EXPLAIN. [Tests](../db/gorm/migrations_integration_test.go). | Source present; live DB execution blocked. |
+| Order domain | Multiple item snapshots, exact total 3495, UUIDv7/time values, empty/unknown/duplicate items, zero/negative quantities, line/aggregate overflow, permitted predecessor mapping. [Tests](domain/order/order_test.go). | Local race-enabled tests passed. |
+| Money and quote use case | Identity conversion, JPY/KWD precision, half-even ties, invalid rates/overflow; quote snapshot, TTL cap, foreign owner, expired quote, missing rate, replay after cleanup. [Money](domain/money/money_test.go), [quote service](service/quote/service_test.go). | Local tests passed; fake repositories do not establish DB locking behavior. |
+| Worker/configuration/health state | Full/short/empty batches, cancellation/failure, no work before initial tick in the tested cancellation case, health boundaries/recovery, concurrent health reads, configuration bounds. [Worker tests](service/processing/worker_test.go), [status](service/processing/status_test.go), [config](configs/config_test.go). | Local tests passed; no real five-minute timing result claimed. |
+| Auth and HTTP boundary | Registration/login/logout, invalid JWT/current role, inactive/missing-user verification, password bounds, limiter capacity/concurrency/forwarded-header behavior, JSON/content-type errors and log redaction. [JWT](service/auth/jwt/client_test.go), [middleware](api/rest/middleware/rate_limit_test.go), [server](api/rest/server_test.go). | Source present; full dependency-based execution blocked. |
+| Requirements through API + PostgreSQL | Roles/ownership, catalog, multi-item order, totals, skip/cancel rules, processing/delivery, filtering/cursors, quote creation/replay, logout. [Scenario](api/rest/routes/routes_integration_test.go). | Source present; live DB execution blocked. |
+| Order persistence/concurrency | Snapshot persistence after catalog change, transactional rollback, concurrent batches/cutoff, 20 cancellation races, skipping locked rows, failed batch rollback, pending index EXPLAIN. [Tests](db/gorm/order_repository_integration_test.go). | Source present; live DB execution blocked. |
+| Pricing persistence/concurrency | Eight concurrent submissions producing one order, replay after cleanup, currency mismatch, serialized initialization/rate imports, legacy adoption, expiry after lock wait, rollback if consumption fails. [Tests](db/gorm/pricing_integration_test.go). | Source present; live DB execution blocked. |
+| Migrations and cleanup | Migration round trip/legacy preservation, down guards, quote-expiry cleanup index EXPLAIN. [Tests](db/gorm/migrations_integration_test.go). | Source present; live DB execution blocked. |
 | Deployed API smoke and live timing | Docker smoke exercises auth/catalog/orders/quotes and automatic processing on a five-second tick. Live runbook verifies two real five-minute ticks and terminal states. | Smoke blocked; live runbook prepared but not executed. |
 
 The controlled API integration test proves successful pending cancellation. The
