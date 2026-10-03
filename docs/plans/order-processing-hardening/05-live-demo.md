@@ -58,10 +58,11 @@ under `$DEMO_TMP`; do not share that directory or enable shell tracing.
 
 ```bash
 api() {
-  local expected="$1" method="$2" path="$3" token="${4:-}" body="${5:-}" code
+  local expected="$1" method="$2" path="$3" token="${4:-}" body="${5:-}" key="${6:-}" code
   local args=(-sS --connect-timeout 3 --max-time 10 -X "$method"
     -H 'Content-Type: application/json' -o "$DEMO_BODY" -w '%{http_code}')
   if [ -n "$token" ]; then args+=(-H "Authorization: Bearer $token"); fi
+  if [ -n "$key" ]; then args+=(-H "Idempotency-Key: $key"); fi
   if [ -n "$body" ]; then args+=(--data "$body"); fi
   code="$(curl "${args[@]}" "$API_URL$path")"
   printf '%s %s %s -> HTTP %s (expected %s)\n' \
@@ -130,16 +131,23 @@ CANCEL_ID="$(jq -er .id "$DEMO_BODY")"
 jq -e '.status == "PENDING" and .currency == "USD" and .total_minor == 3495 and (.items | length) == 2' "$DEMO_BODY"
 api 200 POST "/api/v1/orders/$CANCEL_ID/cancel" "$CUSTOMER_TOKEN"
 jq -e '.status == "CANCELLED"' "$DEMO_BODY"
-api 409 POST "/api/v1/orders/$CANCEL_ID/cancel" "$CUSTOMER_TOKEN"
+api 200 POST "/api/v1/orders/$CANCEL_ID/cancel" "$CUSTOMER_TOKEN"
 
-api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART"
+api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART" 'demo-checkout'
 ORDER_ID="$(jq -er .id "$DEMO_BODY")"
 jq -e '.status == "PENDING" and .total_minor == 3495 and (.items | length) == 2' "$DEMO_BODY"
+api 200 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART" 'demo-checkout'
+jq -e --arg id "$ORDER_ID" '.id == $id' "$DEMO_BODY"
+CHANGED_CART="$(jq '.items[0].quantity += 1' <<< "$CART")"
+api 409 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CHANGED_CART" 'demo-checkout'
+jq -e '.details.reason == "idempotency_key_conflict"' "$DEMO_BODY"
+
 api 409 PATCH "/api/v1/orders/$ORDER_ID/status" "$ADMIN_TOKEN" '{"status":"SHIPPED"}'
 ```
 
-Expected: both creations return 201; first cancellation is 200/CANCELLED,
-repetition is 409, and PENDING → SHIPPED is 409. No manual transition to PROCESSING
+Expected: both creations return 201; keyed replay returns the same ID with 200,
+changed payload reuse returns 409; first cancellation is 200/CANCELLED,
+repetition is 200/CANCELLED, and PENDING → SHIPPED is 409. No manual transition to PROCESSING
 is used for `ORDER_ID` or the second worker order below.
 
 ## D2 — Retrieve, ownership and invalid input (R1, R2, R3a)

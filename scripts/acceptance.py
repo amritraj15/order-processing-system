@@ -124,7 +124,7 @@ def main():
         env["DATABASE_URL"] = database_url
         env["TEST_DATABASE_URL"] = database_url
         run("migration-up", [str(binary), "migrate", "up"])
-        for version in (3, 2, 1):
+        for version in (4, 3, 2, 1):
             run("migration-down-" + str(version), [str(binary), "migrate", "down"])
         run("migration-up-again", [str(binary), "migrate", "up"])
         run("integration", ["go", "test", "-mod=readonly", "-count=1", "-race", "-v", "-tags=integration", "./..."])

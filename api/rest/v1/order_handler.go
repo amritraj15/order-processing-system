@@ -113,10 +113,14 @@ func (h *OrderHandler) Create(c *echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
-	var o *order.Order
-	var err error
-	replay := false
 	customer := uuid.MustParse(middleware.Claims(c).UserID)
+	cmd := service.PlaceCommand{CustomerID: customer}
+	if keys, present := c.Request().Header["Idempotency-Key"]; present {
+		if len(keys) != 1 || !service.ValidIdempotencyKey(keys[0]) {
+			return echo.NewHTTPError(422, "Idempotency-Key must be a single 1–128 character value using letters, digits, ., _, :, or -")
+		}
+		cmd.IdempotencyKey = keys[0]
+	}
 	if req.QuoteID != "" {
 		if req.Items != nil {
 			return c.JSON(422, map[string]any{"error": "quote_id and items are mutually exclusive", "details": map[string]string{"reason": "quote_required_fields"}})
@@ -125,7 +129,7 @@ func (h *OrderHandler) Create(c *echo.Context) error {
 		if parseErr != nil || id == uuid.Nil {
 			return shared.ErrInvalid
 		}
-		o, replay, err = h.Service.HandleCreateFromQuote(c.Request().Context(), service.CreateFromQuoteCommand{CustomerID: customer, QuoteID: id})
+		cmd.QuoteID = &id
 	} else {
 		if len(req.Items) == 0 {
 			return shared.ErrInvalid
@@ -134,8 +138,9 @@ func (h *OrderHandler) Create(c *echo.Context) error {
 		if parseErr != nil {
 			return parseErr
 		}
-		o, err = h.Service.HandleCreate(c.Request().Context(), service.CreateCommand{CustomerID: customer, Items: inputs})
+		cmd.Items = inputs
 	}
+	o, replay, err := h.Service.HandlePlace(c.Request().Context(), cmd)
 	if err != nil {
 		return err
 	}

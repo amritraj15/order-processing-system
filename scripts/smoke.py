@@ -8,9 +8,11 @@ import urllib.request
 import uuid
 
 
-def call(method, path, token=None, body=None, expected=200):
+def call(method, path, token=None, body=None, expected=200, key=None):
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
+    if key is not None:
+        headers["Idempotency-Key"] = key
     if token:
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
@@ -41,7 +43,13 @@ def main():
     cancel_result = call("POST", "/api/v1/orders/" + cancelled["id"] + "/cancel", customer, expected=(200, 409))
     cancelled_state = call("GET", "/api/v1/orders/" + cancelled["id"], customer)["status"]
     assert cancelled_state in ("CANCELLED", "PROCESSING")
-    order = call("POST", "/api/v1/orders", customer, payload, 201)
+    if cancelled_state == "CANCELLED":
+        assert call("POST", "/api/v1/orders/" + cancelled["id"] + "/cancel", customer)["status"] == "CANCELLED"
+    key = "smoke-" + suffix
+    order = call("POST", "/api/v1/orders", customer, payload, 201, key=key)
+    assert call("POST", "/api/v1/orders", customer, payload, key=key)["id"] == order["id"]
+    changed = {"items": [{"product_id": products[0]["id"], "quantity": 1}]}
+    call("POST", "/api/v1/orders", customer, changed, 409, key=key)
     path = "/api/v1/orders/" + order["id"]
     assert order["total_minor"] == 3495 and len(order["items"]) == 2
     call("GET", path, other, expected=404)
@@ -72,7 +80,7 @@ def main():
     call("POST", "/api/v1/orders", other, {"quote_id": quote["id"]}, 404)
     call("POST", "/api/v1/auth/logout", customer, expected=204)
     call("GET", path, customer, expected=401)
-    print("API smoke test passed: auth, catalog, orders, isolation, transitions, cancellation, pagination, logout")
+    print("API smoke test passed: auth, catalog, orders, idempotency, isolation, transitions, cancellation, pagination, logout")
 
 
 base = os.environ.get("API_URL", "http://127.0.0.1:8080").rstrip("/")

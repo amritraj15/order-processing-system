@@ -180,7 +180,7 @@ own migrations and do not depend on demo products or an API process.
 ```bash
 DATABASE_URL="$MIGRATION_DATABASE_URL" bin/orders migrate up 2>&1 \
   | tee "$LOCAL_RESULTS/migrations.log"
-for version in 3 2 1; do
+for version in 4 3 2 1; do
   DATABASE_URL="$MIGRATION_DATABASE_URL" bin/orders migrate down 2>&1 \
     | tee -a "$LOCAL_RESULTS/migrations.log"
 done
@@ -193,7 +193,8 @@ go test -mod=readonly -count=1 -race -v -tags=integration ./... 2>&1 \
 
 Expected: all commands exit 0. Tests cover the complete order lifecycle and role
 rules, transaction rollback, concurrent worker/cancellation, quote expiry/replay,
-database timestamps, migration guards and EXPLAIN index assertions. `-v` retains
+database timestamps, keyed create concurrency/conflicts/rollback, repeated cancellation,
+migration guards and EXPLAIN index assertions. `-v` retains
 the query plans. `make integration` is also available, but the explicit command
 above forces a fresh run and retains verbose evidence.
 

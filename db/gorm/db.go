@@ -65,6 +65,12 @@ func Migrate(ctx context.Context, dsn string, down bool) error {
 	return nil
 }
 func mapError(err error) error {
+	var state interface{ SQLState() string }
+	if errors.As(err, &state) && (state.SQLState() == "55P03" || state.SQLState() == "57014") {
+		// Lock timeout or statement cancellation. Preserve the underlying cause
+		// for diagnostics while exposing a safe retryable application error.
+		return fmt.Errorf("%w: %w", shared.ErrUnavailable, err)
+	}
 	if errors.Is(err, orm.ErrRecordNotFound) {
 		return shared.ErrNotFound
 	}

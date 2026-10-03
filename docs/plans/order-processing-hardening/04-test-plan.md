@@ -19,7 +19,7 @@ The live demo below has not yet been executed.
 | R3a — Update order status | PENDING → PROCESSING → SHIPPED → DELIVERED; only one forward stage at a time. Skip, reverse and repeated transitions return 409; customer status changes return 403. | `TestStatusTransitions` in domain tests; `TestCustomerAndAdminOrderFlow`; `TestOrderTransactionSnapshotsAndStatus`. | D1 rejects a skipped stage; D4 completes lifecycle; D7 exercises manual PENDING → PROCESSING. |
 | R3b — Process PENDING every five minutes | First worker run occurs five minutes after process startup, then every five minutes. It advances eligible PENDING orders without a status API call; cancelled/delivered orders remain unchanged. | `TestLoadDefaultsAndValidation` in [configuration tests](../../../configs/config_test.go); `TestRunWaitsForFirstTick`, `TestDrainProcessesFullAndShortBatches`, `TestDrainStopsOnFailureAndCancellation` in [worker tests](../../../service/processing/worker_test.go); `TestPendingBatchesConcurrencyCutoffAndQueryPlan` and `TestPendingSkipsLockedRowsAndRollsBackFailedBatch` in repository tests; [Docker smoke](../../../scripts/smoke-docker.sh) exercises a **5-second** interval. | D0 resets the timer; D4 proves first tick; D6 proves recurrence with two timestamped attempts about 300 seconds apart. Unit tests/short smoke do not measure real five-minute cadence. |
 | R4 — List orders, optionally by status | Unfiltered list contains all accessible orders across pages; status filter returns only that status. Customer sees own orders, admin sees all. Invalid filter/page size returns 422. | `TestCustomerAndAdminOrderFlow` covers customer isolation, admin visibility, filtering, cursor pages and invalid filters. [API smoke](../../../scripts/smoke.py) also covers delivered filtering and pagination. | D3 unfiltered/CANCELLED lists and cursor page; D4 DELIVERED list; D5 cross-customer admin visibility. |
-| R5 — Cancel only PENDING | PENDING → CANCELLED returns 200 and stays cancelled after worker ticks. Cancellation of PROCESSING, SHIPPED, DELIVERED or already CANCELLED returns 409. A processing/cancellation race has exactly one winner. | `TestStatusTransitions`; `TestCustomerAndAdminOrderFlow`; `TestCancellationAndProcessingRace` in repository tests. | D1 successful/repeated cancellation; D4 rejection at each later stage; D6 cancelled state persists. |
+| R5 — Cancel only PENDING | PENDING → CANCELLED returns 200 and stays cancelled after worker ticks. Repeated cancellation returns 200 without changing the timestamp. PROCESSING, SHIPPED and DELIVERED return 409. A processing/cancellation race has exactly one winner. | `TestStatusTransitions`; `TestCustomerAndAdminOrderFlow`; `TestCancellationAndProcessingRace` in repository tests. | D1 successful/repeated cancellation; D4 rejection at each later stage; D6 cancelled state persists. |
 
 The HTTP/DB scenario controls processing directly, so its successful cancellation
 assertion is deterministic. The accelerated Docker smoke accepts either a
@@ -119,10 +119,45 @@ Do not attach raw auth responses, passwords or tokens.
 | R3a transitions | NOT RUN / PASS / FAIL | Ordered lifecycle, manual processing, forbidden/invalid transitions. |
 | R3b five-minute worker | NOT RUN / PASS / FAIL | Interval 5m, two distinct successful ticks about 300s apart, two automatically advanced orders. |
 | R4 list/filter | NOT RUN / PASS / FAIL | Unfiltered pages, filtered statuses, customer/admin scope. |
-| R5 cancel | NOT RUN / PASS / FAIL | Pending success, later/repeat rejection, still cancelled after worker. |
+| R5 cancel | NOT RUN / PASS / FAIL | Pending/repeat success, later-state rejection, still cancelled after worker. |
 | Supporting behavior | NOT RUN / PASS / FAIL | D5 pricing/ownership and D7 logout, plus supporting automated logs. |
 
 Mark each row independently. Core demo completion requires every R1–R5 assertion
 to pass, including both R3 rows. Full acceptance additionally requires successful
 automated stages. A fast smoke or presentation using saved evidence can support a
 walkthrough, but must be labelled as such and cannot close the live timing check.
+
+## Retry safety extension
+
+| Case | Test / expected result |
+| --- | --- |
+| Lost response, same customer/key/payload | `TestPlaceReplayConflictOwnershipAndUnkeyed`: original ID/prices and current status; HTTP 200. |
+| Same key, different payload | Service and `TestCustomerAndAdminOrderFlow`: 409 `idempotency_key_conflict`. |
+| Same key, another customer | Service/HTTP tests: independent order, no data leak. |
+| Two concurrent payloads sharing a key | `TestConcurrentIdempotencyPayloadConflict`: one creation, one conflict, one durable key. |
+| Eight concurrent retries | `TestIdempotentCreateConcurrentRequests`: one order/key, one creation and seven replays. |
+| Key insertion fails after order/items/quote changes | `TestIdempotencyFailureRollsBackOrderAndQuote`: all writes roll back; same key can retry successfully. |
+| Same quote, multiple keys | Rollback/retry and HTTP tests: every accepted key maps to the original order. |
+| Changed JSON formatting or UUID case | HTTP flow: 200 replay. Invalid/empty/duplicate headers: 422. |
+| Cancel already CANCELLED | Repository/HTTP tests: 200; unchanged updated_at; foreign customer 404. |
+| Migration downgrade with keys | Repository test: refuses to erase retry protection. Empty up/down/up includes 000004. |
+
+Service tests passed locally. New PostgreSQL/HTTP cases remain pending dependency
+and database access; written test cases are not evidence of a passing run.
+
+### Retention metadata and timeout follow-up
+
+- `created_at` uses the DB clock and remains unchanged across replays; the
+  concurrent-create test checks persistence and stable age.
+- `TestKeyedCreateDeadline` checks the 10s operation budget, propagation of an
+  earlier caller deadline, timeout errors and child-context cleanup.
+- `TestIdempotencyLockTimeoutAndRecovery` holds a competing advisory lock,
+  checks transaction-local 2s/5s settings, expects a retryable failure without
+  writes, then verifies the same key succeeds after release.
+- `TestIdempotencyStatementTimeoutRollsBack` stalls the key insert, verifies
+  statement timeout rolls back the order/items/key, then retries successfully.
+- `TestRetryableTimeoutResponse` checks safe HTTP 503 and `Retry-After: 1`.
+
+The proposed 30-day retention window has no purge implementation or expiry tests;
+keys currently remain indefinitely. Database/HTTP execution of this follow-up
+remains pending environment access; no live timeout result is claimed.

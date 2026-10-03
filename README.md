@@ -15,12 +15,14 @@ All endpoints below use the `/api/v1` prefix and a Bearer token.
 | Update order status | `PATCH /orders/{id}/status`; PENDING → PROCESSING → SHIPPED → DELIVERED. | Admin only |
 | Automatically process PENDING every five minutes | Embedded worker; first run five minutes after process startup, then every five minutes. | Automatic |
 | List all orders, optionally by status | `GET /orders?status=PENDING`; omit status for all accessible orders, follow `next_cursor` for further pages. | Customer's own orders; admin sees all |
-| Cancel only a PENDING order | `POST /orders/{id}/cancel`; 200 if pending, otherwise 409. | Owning customer only |
+| Cancel only a PENDING order | `POST /orders/{id}/cancel`; 200 if PENDING or already CANCELLED; otherwise 409. | Owning customer only |
 
 `CANCELLED` is an additional terminal status used to record cancellation. Admins
 advance order status; customers place and cancel their own orders. Authentication,
 catalog pricing and regional quotes are approved extensions to the assignment.
 The core items-only order flow uses base currency and needs no FX-rate setup.
+It still requires authentication and catalog products; there is no unauthenticated
+or catalog-free order mode.
 
 For the quickest executable review, run `go mod tidy` then `make smoke-docker`
 on a host with Go, Python 3 and Docker access. It provisions the admin, customers,
@@ -37,6 +39,99 @@ The [architecture discussion](architecture.md) provides design details.
 The remaining planning and review files retain decision history and verification
 evidence; they are optional background for a reviewer. Recorded local passes are
 limited to the named packages; full acceptance remains pending.
+
+## Known limitations and next steps
+
+| Area | Current boundary and next step |
+| --- | --- |
+| Create retries | Supply `Idempotency-Key` for retry-safe items-only creation. Without it, retries can still duplicate. Quote submissions retain their existing replay guarantee. Keys currently remain indefinitely; their database creation timestamp supports the proposed 30-day retention policy described below. |
+| Status history | Current state/timestamps and mutation logs exist, but no durable transition history table. Next: record previous/new status, actor, reason and time in the transition transaction. |
+| Scheduling | Every API replica has its own five-minute ticker. Row locks protect transitions, but there is no single deployment-wide cadence. Next, if required: separate worker lifecycle and one coordinated scheduler. |
+| Commerce workflows | Inventory reservation, payments, refunds and external fulfillment are outside scope. Adding them requires explicit business rules, retry-safe integrations and transactional event publication. |
+| Capacity and operations | Throughput at 10k orders/s is unmeasured. Add load tests, pending-age/throughput/DB-pool metrics and tracing before choosing caches, replicas, queues or partitioning. Auth limits are currently per-process. |
+| Availability | The supplied deployment uses one PostgreSQL instance. Add tested backup/restore and HA/failover before making availability commitments. |
+| Verification | Cancellation-race and concurrent-consumer tests exist in the [repository suite](db/gorm/order_repository_integration_test.go); full DB/container execution remains pending. Use [TESTING.md](TESTING.md) to reproduce checks. |
+
+Repeated cancellation returns 200 with the owned CANCELLED order, without changing
+its timestamp. Cancellation of PROCESSING, SHIPPED or DELIVERED still returns 409.
+Durable status history remains a focused enhancement; inventory/payment workflows
+expand the brief.
+
+## Retry-safe order creation and the table decision
+
+Send an optional `Idempotency-Key` on `POST /api/v1/orders`, with either `items`
+or `quote_id`. Use one new key for each intended purchase and reuse it on retries.
+Keys are case-sensitive, customer-scoped, 1–128 characters from `A–Z a–z 0–9 . _ : -`.
+Empty, repeated or invalid headers return 422. The header remains optional to
+preserve the original API contract and existing clients. Any client that retries
+items-only creation should require and persist a key for each intended purchase;
+server-wide enforcement would need an announced API migration.
+
+```sh
+curl -i http://localhost:8080/api/v1/orders \
+  -H "Authorization: Bearer $CUSTOMER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: checkout-2026-001' \
+  -d "{\"items\":[{\"product_id\":\"$PRODUCT_ID\",\"quantity\":2}]}"
+```
+
+First creation returns 201. The same key and payload return the original order
+with 200, including its **current** status and original price snapshots. A different
+payload returns 409 with `details.reason = idempotency_key_conflict`. JSON whitespace,
+object property order and UUID letter case do not change the fingerprint; item
+array order does. Failed transactions do not reserve a key. Quote replay still
+returns 200 without a header, even after quote expiry/cleanup.
+
+**Why a separate table?** Columns on `orders` would be sufficient if every order
+had exactly one key. The quote API permits multiple keys to identify one existing
+order, so `order_idempotency(customer_id, idempotency_key, request_hash, order_id, created_at)`
+stores that many-to-one relationship. For example:
+
+1. Quote Q submitted with key A creates order O.
+2. The same quote submitted with key B returns O and records B → Q → O.
+3. A later, different purchase using B returns 409. Ignoring B in step 2 would let
+   that key create an unrelated order; replacing A with B would lose A's binding.
+
+Quote uniqueness already prevents duplicate orders in step 2. The extra table
+preserves **every accepted key's payload binding**, rather than adding another
+quote-duplication safeguard. A one-key-per-order design could instead reject B;
+that is a valid simpler alternative with a stricter API contract.
+
+The table and order/items commit together. Transaction-scoped database locks
+serialize matching customer/key requests across replicas; a crash or rollback
+releases the lock and leaves no partial key/order pair. The cost is another row,
+index entry and lookup/insert for keyed requests, plus lock waits for retries.
+
+**Retention:** `created_at` is a database-generated timestamp, unchanged by replay.
+A proposed production policy is **30 days from first successful key insertion**;
+24 hours is a possible shorter window only if all clients' retry/reconciliation
+needs fit within it. Automatic expiry/deletion is **not implemented**: keys still
+remain indefinitely in this version. Before enabling cleanup, publish the retry
+window and add indexed, bounded deletion coordinated with key acquisition.
+After deletion, a late items-only retry could create another order. Clients must
+never recycle purchase keys; quote uniqueness survives key deletion separately.
+
+**Replay tradeoff:** this API returns the original order's current representation,
+so a replay after cancellation returns CANCELLED with 200. It preserves purchase
+identity/prices, but does not reproduce the first HTTP status/body byte for byte.
+Storing the original response would provide exact response replay at the cost of
+additional storage and an intentionally historical status in that response.
+
+**Pool protection:** keyed creation has a 10-second overall deadline, including
+pool acquisition, and transaction-local PostgreSQL limits of 2 seconds per lock
+wait and 5 seconds per statement. Earlier caller deadlines take precedence.
+Timeouts return 503 with `Retry-After: 1`; retry with backoff and the **same key and
+payload**, since a failed/ambiguous commit response does not prove no order exists.
+These bounds reduce pressure on the 20-connection pool per instance; they do not
+replace admission controls or load testing. They do not cover unkeyed requests.
+
+**Coverage, not a traffic estimate:** the design supports both create forms
+(items and quote), **2 of 2 request forms (100%)**. This is not 100% test coverage,
+production traffic coverage, or a guarantee for items requests without a key.
+The frequency of the multiple-key quote case is **unmeasured**; no percentage or
+performance benefit is claimed. Service tests pass locally; new PostgreSQL/HTTP
+integration cases still require execution in an accessible environment. See the
+[architecture decision](architecture.md#decision-durable-idempotency-records).
 
 ## Run with Docker
 
@@ -173,7 +268,7 @@ batches remain processed and outstanding rows are retried at the next tick.
 Shutdown cancels active worker database operations. The worker also purges
 expired logout tokens using an expiry index. JSON logs include processed count,
 duration, and failures. `/health` and `/api/v1/health` are liveness probes;
-`/api/v1/ready` checks schema version 3, initialized catalog settings and local worker health. It exposes safe last-attempt/success/failure timestamps. Startup grace is two intervals; failed runs are unhealthy immediately, stale success after two intervals is unhealthy, and a successful run (including an empty queue) restores readiness. Each drain has a one-interval deadline. Quote cleanup is bounded to 500 rows per tick, eligible 24 hours after expiry; cleanup failures are logged separately.
+`/api/v1/ready` checks schema version 4, initialized catalog settings and local worker health. It exposes safe last-attempt/success/failure timestamps. Startup grace is two intervals; failed runs are unhealthy immediately, stale success after two intervals is unhealthy, and a successful run (including an empty queue) restores readiness. Each drain has a one-interval deadline. Quote cleanup is bounded to 500 rows per tick, eligible 24 hours after expiry; cleanup failures are logged separately.
 
 ## Local development and tests
 
@@ -378,6 +473,8 @@ It does not use an existing application database. A failed prerequisite returns
 nonzero and records a blocked run, never a successful acceptance result.
 
 Migrations 000002/000003 add catalog/rates/quotes and optional legacy provenance.
+Migration 000004 adds durable idempotency records; deploy it before starting this
+binary. Its down migration refuses while keys exist to preserve retry guarantees.
 Use a maintenance window; old writers cannot safely coexist with the new schema.
 The quote down migration refuses while quotes or new-format orders exist. The
 pricing down migration refuses while rates or mismatched order currencies exist.

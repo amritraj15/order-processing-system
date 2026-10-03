@@ -26,6 +26,7 @@ func TestPricingMigrationsRoundTripAndLegacyPreservation(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
+	apply("000004_order_idempotency.down.sql")
 	apply("000003_order_quotes.down.sql")
 	apply("000002_pricing.down.sql")
 	apply("000002_pricing.up.sql")
@@ -38,6 +39,7 @@ func TestPricingMigrationsRoundTripAndLegacyPreservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	apply("000003_order_quotes.up.sql")
+	apply("000004_order_idempotency.up.sql")
 	o, err := (&database.OrderRepository{DB: db}).Get(context.Background(), id, &customer)
 	if err != nil || o.Currency != "USD" || o.TotalMinor != 1299 || o.Pricing != nil {
 		t.Fatalf("legacy repriced: %+v %v", o, err)

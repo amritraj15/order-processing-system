@@ -2,6 +2,7 @@ package gorm
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -133,6 +134,9 @@ func (r *OrderRepository) Transition(ctx context.Context, id uuid.UUID, customer
 			return wrap("order_repository.Transition", err)
 		}
 		if res.RowsAffected == 0 {
+			if previous == order.Pending && next == order.Cancelled && result.Status == order.Cancelled {
+				return nil
+			}
 			return shared.ErrConflict
 		}
 		return nil
@@ -170,7 +174,9 @@ type repositories struct{ db *orm.DB }
 func (r repositories) Orders() order.Repository     { return &OrderRepository{DB: r.db} }
 func (r repositories) Products() product.Repository { return &ProductRepository{DB: r.db} }
 func (u *UnitOfWork) Do(ctx context.Context, fn func(uow.Repositories) error) error {
-	return wrap("unit of work", u.DB.WithContext(ctx).Transaction(func(tx *orm.DB) error { return fn(repositories{db: tx}) }))
+	// A key/quote lookup after waiting for a competing transaction must see its
+	// commit, even if the database's default isolation is configured differently.
+	return wrap("unit of work", u.DB.WithContext(ctx).Transaction(func(tx *orm.DB) error { return fn(repositories{db: tx}) }, &sql.TxOptions{Isolation: sql.LevelReadCommitted}))
 }
 
 var _ order.Repository = (*OrderRepository)(nil)

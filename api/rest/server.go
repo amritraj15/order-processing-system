@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
@@ -80,7 +81,14 @@ func NewServer(logger *slog.Logger) *echo.Echo {
 		var validation *validator.ValidationError
 		var httpErr *echo.HTTPError
 		var statusCoder echo.HTTPStatusCoder
+		retryableTimeout := errors.Is(err, shared.ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
 		switch {
+		case retryableTimeout:
+			code = 503
+			c.Response().Header().Set("Retry-After", "1")
+		case errors.Is(err, shared.ErrIdempotencyConflict):
+			code = 409
+			response = APIError{Error: "idempotency key reused with different payload", Details: map[string]string{"reason": "idempotency_key_conflict"}}
 		case errors.As(err, &validation):
 			code = 422
 			response = APIError{Error: "validation failed", Details: validation.Details}
@@ -119,6 +127,9 @@ func NewServer(logger *slog.Logger) *echo.Echo {
 		if code >= 500 {
 			logger.ErrorContext(c.Request().Context(), "request failed", "error_kind", "internal")
 			response.Error = "internal server error"
+			if retryableTimeout {
+				response.Error = "temporarily unavailable"
+			}
 		}
 		_ = c.JSON(code, response)
 	}

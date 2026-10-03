@@ -292,6 +292,16 @@ paths:
           "$ref": "#/components/responses/Error"
     post:
       summary: Create a base-currency order or consume an owned quote
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        required: false
+        description: Case-sensitive customer-scoped retry key. Supply one value per request and reuse it with the same payload on retry. Keys do not expire.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:-]+$'
       requestBody:
         required: true
         content:
@@ -330,6 +340,17 @@ paths:
                     type: string
                     format: uuid
       responses:
+        '503':
+          description: Temporary database contention or deadline exceeded. Retry with backoff using the same key and payload.
+          headers:
+            Retry-After:
+              schema:
+                type: string
+              description: Suggested minimum delay in seconds (1).
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
         '201':
           description: Created in PENDING status
           headers:
@@ -362,7 +383,15 @@ paths:
       description: Use items alone for a direct base-currency purchase. Use quote_id
         alone for an accepted regional quote. A successful retry of the same quote
         returns the existing order with 200, even after expiry; new orders return
-        201.
+        201. Optional Idempotency-Key applies to either form. The same customer/key
+        and decoded payload return the original order in its current state with 200;
+        different payload reuse returns 409 with details.reason idempotency_key_conflict.
+        JSON whitespace/property order and UUID case normalize; item array order is significant.
+        Invalid, empty or multiple key headers return 422. Failed transactions do not retain keys.
+        Unkeyed items-only retries can create duplicate orders. The optional header
+        preserves existing clients; clients implementing retries should always supply it.
+        Keyed creation has a 10s overall deadline, a 2s lock timeout and a 5s statement timeout.
+        Timeout responses are 503 with Retry-After 1; retry with the same key and payload.
   "/api/v1/orders/{id}":
     parameters:
     - "$ref": "#/components/parameters/ID"
@@ -420,6 +449,9 @@ paths:
     - "$ref": "#/components/parameters/ID"
     post:
       summary: Customer cancels an owned PENDING order
+      description: Returns 200 for PENDING to CANCELLED and for an already CANCELLED
+        order without changing its timestamp. PROCESSING, SHIPPED and DELIVERED return
+        409. Missing or another customer's order returns 404.
       responses:
         '200':
           "$ref": "#/components/responses/Order"

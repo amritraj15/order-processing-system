@@ -113,7 +113,7 @@ changes reviewable; startup does not perform GORM auto-migration.
 Existing-data upgrades require a maintenance window: stop old writers, apply
 migrations, explicitly adopt the original catalog currency where required, import
 rates and start the compatible application. Readiness currently expects exactly
-schema version 3, so zero-downtime mixed-version upgrades are not established.
+schema version 4, so zero-downtime mixed-version upgrades are not established.
 Down migrations guard against losing pricing provenance; after new monetary
 writes, prefer forward repair. Migration rollback tests use disposable data.
 
@@ -124,7 +124,7 @@ writes, prefer forward repair. Migration rollback tests use disposable data.
 | Layer / source | Responsibility and key contracts |
 | --- | --- |
 | [HTTP routes](api/rest/routes/routes.go) and [handlers](api/rest/v1/order_handler.go) | Route registration, DTO validation, role/owner scope, response formatting and HTTP status selection. |
-| [Order service](service/order/command_handler.go) | `HandleCreate`, `HandleStatus`, `HandleCancel`; read handlers delegate scoped queries. |
+| [Order service](service/order/command_handler.go) | `HandlePlace` coordinates keyed/unkeyed items and quotes; `HandleCreate`, `HandleStatus`, `HandleCancel`; read handlers delegate scoped queries. |
 | [Quote service](service/quote/service.go) and [quote consumption](service/order/quote_handler.go) | Select region/rate, freeze a quote, then atomically consume it or replay its existing order. |
 | [Domain order](domain/order/order.go) and [money](domain/money/money.go) | Pure item/total validation, previous-state mapping, conversion, precision and overflow checks. No HTTP or GORM dependency. |
 | [Unit-of-work interface](service/uow/uow.go) | Execute a callback using repositories bound to one transaction; read database time. |
@@ -145,6 +145,7 @@ implementations. HTTP request DTOs and GORM row structs remain outside the domai
 | `products` | UUID, SKU, name, positive `price_minor` | Unique SKU; price in the catalog's single base currency. |
 | `catalog_settings` | Singleton row containing `base_currency` | Singleton key; supported currency constraint; application rejects later currency mismatch. |
 | `orders` | UUID, customer FK, status, currency, total, optional quote ID, pricing provenance | Valid status and positive total; unique non-null quote ID; provenance checks. |
+| `order_idempotency` | Customer FK, case-sensitive key, SHA-256 request hash, order FK, DB-generated `created_at` | Primary key `(customer_id, idempotency_key)`; non-null result ID; stored in the creation transaction; no expiry. |
 | `order_items` | Order FK, position, product FK, name/SKU/price snapshots, quantity, line total | Unique product per order; positive values; `line_total = quantity × unit_price`; delete with parent order. |
 | `fx_rates` | UUID, base/target, decimal rate, finite validity interval, source | Positive `NUMERIC(24,12)` rate; valid interval; application import serializes overlap checks. |
 | `order_quotes` | Customer FK, amounts, region/mapping version, rate snapshot, expiry, optional consumed-order FK | Expiry after creation; positive values; unique consumed order. |
@@ -185,17 +186,132 @@ page loads its items in one additional query, avoiding a query per order.
 
 1. Validate JWT and read the current user/role; derive the customer from that user.
 2. Parse a strict JSON body. Accept 1–100 distinct products with positive quantities.
-3. Begin a unit-of-work transaction and fetch all requested catalog products.
-4. Read persisted catalog currency and database time. Build immutable item snapshots.
+3. Begin a unit-of-work transaction. If a key is supplied, acquire its customer-scoped
+   transaction advisory lock and look up the durable record. Matching fingerprints
+   replay the owned order with 200; a mismatch returns 409.
+4. For a new items request, fetch products, catalog currency and database time, then
+   build immutable item snapshots. For quotes, use the existing locked consumption flow.
 5. Check multiplication and total addition before `int64` overflow; reject unknown
    products, duplicate items or invalid amounts.
-6. Insert order and items using the same transaction. A failure rolls everything back.
-7. After commit, log the mutation and return 201 with a `Location` header.
+6. Insert order/items and, when supplied, the key/hash/order ID in the same transaction.
+   Quote consumption also belongs to this transaction. A failure rolls everything back.
+7. After commit, log the mutation and return 201 for creation or 200 for replay,
+   with a `Location` header in both cases.
 
 No client price, customer ID or role can replace these server-controlled values.
-The items-only create request has **no general idempotency key**. Retrying after
-an ambiguous network failure can create another order; quote-backed creation has
-a stronger replay contract described below.
+Unkeyed items-only requests can still duplicate after an ambiguous failure.
+
+### Decision: durable idempotency records
+
+**Decision:** use `order_idempotency` instead of adding a single key/hash pair to
+`orders`. This is an approved extension to create retries, implemented in
+[migration 000004](db/migrations/000004_order_idempotency.up.sql), the
+[transaction coordinator](service/order/place_handler.go) and
+[repository](db/gorm/idempotency_repository.go).
+
+**Reason:** an order is a business entity, while a key identifies an accepted
+customer request. Usually they are one-to-one, but existing quote replay allows
+several distinct keys to refer to one order. This is the concrete distinguishing
+case, not a claim that a table is necessary for basic items-only idempotency:
+
+| Request sequence, same customer | Required result | Single key/hash on the order |
+| --- | --- | --- |
+| Quote Q, key A | Create O, 201; bind A to Q/O | Can store A. |
+| Quote Q, key B | Replay O, 200; also bind B to Q/O | Cannot retain both A and B in one scalar key column. |
+| Different items or quote, key B | 409 payload conflict | Ignoring B previously would allow unintended reuse. |
+| Retry original quote Q, key A | Replay O, 200 | Overwriting A with B loses A's durable binding. |
+
+The unique `orders.quote_id` already prevents quote duplication. The new table
+prevents **forgetting or overwriting an accepted key's payload association**.
+For items-only requests, storing nullable key/hash columns on orders with unique
+`(customer_id, key)` is a sound simpler alternative. We could also reject a second
+key for an existing quote-backed order; that would deliberately narrow the API
+contract. We chose consistent key acceptance for both supported create forms.
+
+**Transaction and concurrency:** `HandlePlace` acquires
+`pg_advisory_xact_lock` on a 64-bit hash of customer ID and key before the lookup,
+including absent keys. The full customer/key composite primary key determines
+identity; a lock-hash collision only serializes unrelated requests. Requests
+using different keys for the same quote additionally serialize on the quote row.
+Lock order is always key then quote; the worker does not acquire either lock.
+Creation, item insertion, quote consumption and insertion of the completed key
+record use the same transaction. Commit exposes them together; rollback/crash
+exposes none and releases the lock. Waiting retries then read the committed
+record under READ COMMITTED. Database errors propagate, never masquerade as replay.
+
+**Contract:** the optional key is case-sensitive and owner-scoped, 1–128 ASCII
+letters/digits or `._:-`; invalid/empty/multiple headers return 422. The versioned
+SHA-256 fingerprint covers decoded quote ID or ordered items, excluding the key
+and owner (the owner scopes uniqueness). JSON whitespace/property ordering and
+UUID spelling normalize; reordered items or changed quantities are different
+payloads. Keep fingerprint encoding stable across upgrades. Matching replay
+returns the existing order's current state and frozen purchase prices, not a
+stored byte-for-byte response. A mismatch returns 409 with
+`details.reason = idempotency_key_conflict`. No failed response/key is retained.
+Keys currently persist indefinitely; cancellation and quote cleanup do not free
+them. Same key under another customer belongs to a separate namespace.
+
+**Why optional:** preserving the existing API contract lets old clients keep
+placing orders. Clients that implement retries for items-only creation should
+require a durable key in their own request workflow. A mandatory server header
+would be a breaking change, requiring a versioned or announced rollout.
+
+**Why current state on replay:** return the same business resource and immutable
+purchase snapshots, including its current lifecycle status. After cancellation,
+replay returns CANCELLED with 200. An alternative is persisting the original HTTP
+status/body, which gives exact response replay but returns historical state and
+adds response storage/versioning concerns. This API intentionally guarantees
+purchase identity, not byte-for-byte reproduction of the first response.
+
+**Retention decision:** the database writes `created_at = clock_timestamp()` on
+first successful insertion. GORM reads this field but does not generate or update
+it; replay does not extend retention. The proposed production window is **30 days
+from creation**, with 24 hours considered only when measured client retry and
+reconciliation windows support it. Current code performs **no expiry or purge**,
+so existing guarantees remain indefinite. Before activation: publish the window,
+add an age index and bounded cleanup, coordinate deletion through the same key
+lock protocol, and test cleanup/retry races. After deletion an items-only retry
+can create a new order, whereas the separate unique quote ID still protects quote
+replay. Clients must not recycle keys. No expiration date is promised by the
+current API.
+
+**Cost and boundaries:** one extra row and primary-index entry per distinct
+accepted key, with a lookup and insert on first keyed creation. The timestamp
+adds retention metadata. A keyed operation has a **10-second context deadline**
+covering connection-pool acquisition through transaction completion; a shorter
+caller deadline wins. Before acquiring the advisory lock, PostgreSQL receives
+transaction-local `lock_timeout = 2s` and `statement_timeout = 5s`. These settings
+also bound subsequent quote/row locks and SQL statements, and revert at transaction
+end instead of leaking to a pooled connection. Total time remains bounded even
+across multiple individually successful statements. Context cancellation asks the
+driver to cancel/roll back; a broken network may delay server-side cleanup, so these
+are execution budgets, not a strict response-time guarantee.
+
+PostgreSQL lock/statement cancellation and context deadline failures produce a
+safe 503 with `Retry-After: 1`. Clients retry with backoff using the original key
+and payload; a timeout near commit can have an ambiguous outcome. Timeout tests
+check rollback and successful retry after releasing the blocking condition.
+These limits reduce stalls in the 20-connection pool per instance but cannot
+prevent saturation by many simultaneous callers. Admission controls, pool-wait
+metrics and load tests remain future work. Unkeyed creation and other endpoints
+do not acquire these keyed-request SQL limits.
+
+Indefinite retention grows storage; enabling the proposed bounded retention or a
+maximum keys-per-order policy requires an explicit contract. The down migration
+refuses nonempty key data so rollback cannot silently erase retry protection.
+
+**Coverage and evidence:** this contract applies to **2/2 supported create forms
+(100% of request forms)**. That denominator says nothing about production traffic,
+branch/line coverage, or whether clients actually supply a key. The incidence of
+multiple keys for one quote is unknown; no measured percentage justifies this
+choice. Its justification is a defined API case already enabled by quote replay.
+The service tests cover replay/conflict, ownership, unchanged historical prices,
+current status, unkeyed compatibility and fingerprint stability. PostgreSQL tests
+cover concurrent same-key requests, transaction rollback including quote
+consumption, durable replay and guarded migration rollback; HTTP integration
+covers normalization, response codes, owner scope and multiple keys per quote.
+Those database/HTTP checks remain unverified until dependency and DB access are
+available. Run the [local acceptance plan](TESTING.md) before claiming full coverage.
 
 ### State machine and cancellation race
 
@@ -222,6 +338,12 @@ writes, and the losing operation cannot also change the old PENDING state. A
 worker skips a row already locked by cancellation; cancellation that encounters an
 already processed order returns 409. This protects the transition across processes,
 where an in-memory Go mutex would be insufficient.
+
+Repeating cancellation of an owned CANCELLED order returns 200 with the current
+order, without another write or timestamp change. The repository recognizes this
+only after the conditional update and ownership-scoped read. PROCESSING, SHIPPED
+and DELIVERED still return 409; a foreign or missing order returns 404. Repeated
+admin status transitions retain their existing 409 behavior.
 
 ### Five-minute processing algorithm
 
@@ -350,11 +472,11 @@ unless explicitly shown otherwise. Protected routes use `Authorization: Bearer`.
 | `POST /products` | Admin | `{sku,name,price_minor}` → 201 product. |
 | `GET /products` | Customer/admin | Optional `limit,cursor` → 200 page. |
 | `GET /products/{id}` | Customer/admin | 200 catalog product. |
-| `POST /orders` | Customer | `{items:[{product_id,quantity},...]}` **or** `{quote_id}` → 201 order; quote replay → 200 same order. |
+| `POST /orders` | Customer | `{items:[{product_id,quantity},...]}` **or** `{quote_id}` → 201 order; matching key or quote replay → 200 original order; key/payload conflict → 409. |
 | `GET /orders/{id}` | Owner/admin | 200 order with items, currency, totals, status and pricing provenance. |
 | `GET /orders` | Customer's orders / all orders for admin | Optional `status,limit,cursor` → 200 `{items,next_cursor}`. |
 | `PATCH /orders/{id}/status` | Admin | `{status:"PROCESSING"}`, `SHIPPED` or `DELIVERED` → 200 after legal transition. |
-| `POST /orders/{id}/cancel` | Owning customer | No body required → 200 CANCELLED, only from PENDING. |
+| `POST /orders/{id}/cancel` | Owning customer | No body required → 200 CANCELLED from PENDING or on an already CANCELLED retry; later fulfillment states → 409. |
 | `POST /order-quotes` | Customer | `{region?,items:[...]}` → 201 quote with rate, amounts and expiry. |
 | `GET /health`, also absolute `/health` | Public | 200 process liveness. |
 | `GET /ready` | Public | 200/503 based on DB/schema/catalog and local worker health. |
@@ -395,7 +517,7 @@ would be needed before changing amount representation.
 | Wrong current state, duplicate email/SKU | 409. Read current state before deciding the next user action. |
 | Expired quote or missing active FX rate | 409 with `details.reason` of `quote_expired` or `rate_unavailable`; request a fresh quote or restore valid rate availability. |
 | Auth rate/capacity limit | 429 and Retry-After; no password work admitted beyond the configured capacity. |
-| Unexpected database/infrastructure failure | Generic 500 for requests, 503 for failing readiness. Internal errors are not returned verbatim. No general automatic transaction retry loop is implemented. |
+| Unexpected database/infrastructure failure | Generic 500 for unexpected request errors, retryable 503 for lock/statement/context timeouts, and 503 for failing readiness. Internal errors are not returned verbatim. No general automatic transaction retry loop is implemented. |
 | Worker batch fails | Roll back that batch, retain earlier commits, record failure, retry remaining pending work on a later tick. |
 | Process stops during a transaction | Uncommitted database work rolls back when the connection ends. Committed data survives; an interrupted HTTP response leaves the client uncertain about commit. |
 
@@ -405,6 +527,9 @@ committed/replayed outcomes. Request logs carry a generated X-Request-ID, route,
 status and duration; raw bodies, tokens, passwords and query strings are excluded.
 Post-commit logs are operational evidence, not a transactional audit ledger: a
 crash between commit and logging can leave a missing log event.
+There is no `order_status_history` table. A durable history enhancement would
+insert order ID, previous/new status, actor, reason and database timestamp in the
+same transaction as every successful transition, including worker updates.
 
 Passwords use bcrypt and length checks. JWT validation restricts HS256, issuer,
 expiry and matching subject/user ID. Each protected request checks the persisted
@@ -424,10 +549,11 @@ ping has a 5s deadline; readiness has 2s. The worker run has one interval and
 maintenance up to 30s. Shutdown cancels the shared service context and allows up
 to 10s for HTTP shutdown/worker completion, so in-flight DB work may be cancelled.
 HTTP socket timeouts do not establish a general database statement deadline;
-explicit per-request/transaction deadlines are a future hardening item.
+keyed creation now has a 10s context budget and transaction-local 2s lock/5s
+statement limits. General deadlines for other requests remain future work.
 
 Liveness says the process responds. Readiness additionally verifies schema version
-3, a clean migration state, initialized catalog settings and local worker health.
+4, a clean migration state, initialized catalog settings and local worker health.
 The worker has two intervals of startup grace; a failed run is unhealthy immediately,
 a success older than two intervals is stale, and an active attempt lasting one
 interval is stale. Successful empty runs restore health. Maintenance cleanup errors
@@ -440,10 +566,10 @@ are logged separately and do not themselves mark order processing failed.
 | Multiple API replicas | Order/quote/user/revocation state is in shared PostgreSQL. Replicas using the same JWT configuration do not need sticky sessions. | Rate-limit counters and worker health remain local; Compose currently declares one API service. |
 | Concurrent workers | PostgreSQL locks and conditional updates coordinate rows; a process does not overlap its own drains. | No leader election or cluster-wide schedule exists. Each process starts its own five-minute ticker. |
 | Global timing | One process demonstrates the assignment's periodic behavior. | Staggered replicas can cause processing runs more often than once per five minutes across the deployment. Repeated restarts also reset the first-run delay. A strict global cadence needs dedicated scheduling/coordination. |
-| Duplicate quote submission | Unique quote-to-order identity plus quote locking gives one committed order per quote through the supported write paths; retry returns that order. | This is a DB-scoped guarantee, not exactly-once payment, shipment or message delivery. Items-only creation is not deduplicated. |
+| Duplicate quote submission | Unique quote-to-order identity plus quote locking gives one committed order per quote through the supported write paths; retry returns that order. | This is a DB-scoped guarantee, not exactly-once payment, shipment or message delivery. Items-only creation is deduplicated when the caller supplies an Idempotency-Key. |
 | Database or network outage | Protected operations require authoritative DB state and fail when it cannot be read/written; readiness fails. | There is no offline write acceptance or partition-tolerant multi-primary design. Recovery/HA is not provisioned by this application. |
 | Clock differences | Quote validation reads DB time after locking; persisted quote expiry is authoritative. | Worker cutoff and JWT checks use application clocks; creation uses DB time. Synchronize hosts; a DB-derived worker cutoff would reduce skew sensitivity. |
-| Lost response after commit | Read a known resource ID; retry quote submission with the same quote ID. | Blind retry of items-only creation risks duplicate orders. Repeating an already completed status change yields 409, not replayed success. |
+| Lost response after commit | Retry create with the same key/payload, or a quote submission with its original quote ID. | Unkeyed items-only retries risk duplicates. Repeating an admin status change yields 409; repeating an owned cancellation yields 200/CANCELLED. |
 | Read consistency | Current reads and writes use the primary DB. Ownership is part of the query scope. | Multi-page reads are not a frozen snapshot; no read replica or cache consistency policy is implemented. |
 | External side effects | None are performed by order status updates. | If payment/shipment/notifications are added, use an outbox and idempotent consumers; DB commit plus a direct network call would introduce a failure gap. |
 
@@ -452,6 +578,20 @@ PROCESSING no longer match the pending queue; uncommitted changes can be retried
 This supports safe repeated scanning, but does not imply that a complete worker
 run is atomic. Concurrency tests exercise the critical row-level cases; deployment
 failover and partition behavior have not been tested.
+
+Creation and quote unit-of-work transactions explicitly use READ COMMITTED, so
+lookups after waiting for key/quote locks see newly committed results. Other
+transactions use the database session setting, normally READ COMMITTED. Each statement
+can see a different committed snapshot. Transactions, row locks and unique
+constraints enforce the specific order/quote invariants; this is not a blanket
+claim of serializable workflows or a snapshot spanning multiple API requests.
+[PostgreSQL isolation behavior](https://www.postgresql.org/docs/18/transaction-iso.html).
+
+A lock held only for each drain prevents simultaneous drains but does not by
+itself establish a global five-minute schedule: staggered replicas can acquire
+that lock one after another. A strict global cadence needs one active scheduler
+or coordinated scheduled slots, with explicit failover/restart behavior. Merely
+moving the same ticker into several dedicated worker replicas retains the issue.
 
 ## 8. Scaling strategy
 
@@ -463,6 +603,12 @@ hard-coded to 20 open / 5 idle connections per process, with a 30-minute lifetim
 HTTP and worker share that pool. The partial pending index makes the queue's
 search path independent of the size of most historical order data, but processing
 still costs work proportional to the pending rows updated.
+
+Successful authenticated requests also perform a denylist lookup and a current
+user lookup. Measure that cost alongside order queries. Caching either can delay
+revocation or role changes, so any cache policy must define the acceptable delay.
+Read replicas similarly require an explicit stale-read policy. Neither is a
+transparent correctness-preserving switch for every endpoint.
 
 The worker deadline limits each drain, and its cutoff prevents an endless chase
 of new arrivals. Locks, DB I/O, WAL, vacuum and competing API traffic still determine
@@ -505,13 +651,14 @@ The following matrix explains the architectural risks covered by those tests.
 | Auth and HTTP boundary | Registration/login/logout, invalid JWT/current role, inactive/missing-user verification, password bounds, limiter capacity/concurrency/forwarded-header behavior, JSON/content-type errors and log redaction. [JWT](service/auth/jwt/client_test.go), [middleware](api/rest/middleware/rate_limit_test.go), [server](api/rest/server_test.go). | Source present; full dependency-based execution blocked. |
 | Request UUID guards | Malformed/missing/nil product IDs and malformed/nil quote IDs return 422 with both the production binder and a decoding-only binder, before service access. [Handler tests](api/rest/v1/order_handler_test.go). | Added for review follow-up; requires HTTP dependencies to execute. |
 | Requirements through API + PostgreSQL | Roles/ownership, catalog, multi-item order, totals, skip/cancel rules, processing/delivery, filtering/cursors, quote creation/replay, logout. [Scenario](api/rest/routes/routes_integration_test.go). | Source present; live DB execution blocked. |
+| Create retry safety | Service replay/conflict/owner scope and fingerprint tests; DB concurrency, rollback, quote aliases and key retention. [Service tests](service/order/place_handler_test.go), [DB tests](db/gorm/idempotency_integration_test.go). | Service race tests passed. DB/HTTP execution blocked by missing dependencies and database access. |
 | Order persistence/concurrency | Snapshot persistence after catalog change, transactional rollback, concurrent batches/cutoff, 20 cancellation races, skipping locked rows, failed batch rollback, pending index EXPLAIN. [Tests](db/gorm/order_repository_integration_test.go). | Source present; live DB execution blocked. |
 | Transition timestamps | A transition's `updated_at` matches database transaction time, independent of application timestamp generation. [Repository tests](db/gorm/order_repository_integration_test.go). | Added for review follow-up; requires live DB execution. |
 | Pricing persistence/concurrency | Eight concurrent submissions producing one order, replay after cleanup, currency mismatch, serialized initialization/rate imports, legacy adoption, expiry after lock wait, rollback if consumption fails. [Tests](db/gorm/pricing_integration_test.go). | Source present; live DB execution blocked. |
 | Migrations and cleanup | Migration round trip/legacy preservation, down guards, quote-expiry cleanup index EXPLAIN. [Tests](db/gorm/migrations_integration_test.go). | Source present; live DB execution blocked. |
 | Deployed API smoke and live timing | Docker smoke exercises auth/catalog/orders/quotes and automatic processing on a five-second tick. Live runbook verifies two real five-minute ticks and terminal states. | Smoke blocked; live runbook prepared but not executed. |
 
-The controlled API integration test proves successful pending cancellation. The
+The controlled API integration test is designed to verify successful pending cancellation. The
 fast Docker smoke accepts 200 or 409 for cancellation because its worker can win
 the race; that flexible smoke result alone is insufficient evidence of successful
 cancellation. The pending query-plan fixture includes 20000 delivered and 1201
@@ -557,7 +704,8 @@ The following are **future work**, not claims about the delivered implementation
 | Immediate | Resolve environment blockers and finish full acceptance/manifests. | Required before declaring implementation fully verified. |
 | Before promising load targets | Add metrics/tracing, representative load/soak tests and explicit latency/backlog objectives. | Use measured bottlenecks; no numerical throughput promise yet. |
 | Before multi-replica/global scheduling commitments | Define global cadence, separate worker lifecycle if needed, use DB time for cutoff, and coordinate scheduling/recovery. | Test staggered starts, repeated restarts, clock skew and loss of a scheduler. |
-| Before broad client retries | Add general create-order idempotency with owner/key uniqueness, payload fingerprint and durable result. | Simulate lost responses and conflicting reuse; retain quote replay semantics. |
+| Before broad client retries | Finish full acceptance for the implemented idempotency contract and require callers to reuse keys. | Exercise lost responses, concurrent conflicting reuse and crash recovery on a real database. |
+| When support/audit history is required | Add transactional order status history covering customer, admin and worker changes. | Verify rollback leaves no history entry and concurrent attempts record only the committed transition. |
 | Before production exposure | Set TLS/secret rotation/ingress policy, shared auth limits, DB connection/deadline budgets and tested backup/restore procedures. | Deployment and failure tests; local Compose is not an HA deployment. |
 | As cleanup volume grows | Bound revoked-token purge and monitor quote cleanup backlog. | Verify bounded transactions under high expiration volume. |
 | If external fulfillment/payments enter scope | Add transactional outbox, idempotent consumers and reconciliation; consider compensation for multi-step business operations. | Test crash windows and duplicate delivery; agree new requirements first. |
@@ -571,7 +719,7 @@ The following are **future work**, not claims about the delivered implementation
 | Why PostgreSQL as the queue? | The work is a conditional status change already in PostgreSQL. Locked indexed batches coordinate it without an additional delivery system. |
 | What prevents cancelling an order while it is being processed? | Conditional writes plus row locks ensure only one competing PENDING transition succeeds. |
 | Is processing exactly once? | There is one committed transition out of PENDING through supported paths; repeated scanning is safe. No exactly-once external side-effect guarantee is claimed. |
-| What happens if the customer retries? | Same quote ID returns the same order. Items-only creation can duplicate after an ambiguous failure; general idempotency is future work. |
+| What happens if the customer retries? | Same customer/key and payload return the original order with 200; conflicting reuse returns 409. Quote ID replay also works without a key. Unkeyed items-only requests can duplicate. |
 | What happens when the region changes? | Obtain a new regional quote. Existing catalog denomination, quotes and accepted orders retain their snapshots. |
 | Can it scale horizontally? | DB coordination supports concurrent application instances, but shared limits, connection budgets, deployment configuration and global scheduling semantics need additional work. |
 | What is actually proven? | The linked local tests have passed; full runtime/concurrency/migration acceptance and real demo timing are still pending. |

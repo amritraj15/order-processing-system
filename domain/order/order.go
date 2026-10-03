@@ -118,4 +118,16 @@ type Repository interface {
 	FindByQuote(context.Context, uuid.UUID, uuid.UUID) (*Order, error)
 	List(context.Context, Filter) (shared.Page[Order], error)
 	Transition(context.Context, uuid.UUID, *uuid.UUID, Status, Status) (*Order, error)
+	// LockAndFindIdempotency must run inside the creation transaction. The lock
+	// lasts until commit/rollback, including when the key does not exist yet.
+	LockAndFindIdempotency(context.Context, uuid.UUID, string) (*IdempotencyRecord, error)
+	InsertIdempotency(context.Context, IdempotencyRecord) error
+}
+
+type IdempotencyRecord struct {
+	CustomerID  uuid.UUID
+	Key         string
+	RequestHash string
+	OrderID     uuid.UUID
+	CreatedAt   time.Time
 }

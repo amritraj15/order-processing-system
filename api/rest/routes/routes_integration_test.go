@@ -37,7 +37,7 @@ func TestCustomerAndAdminOrderFlow(t *testing.T) {
 	}
 	e := rest.NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	routes.Mount(e, routes.MountConfig{Auth: auth, Quotes: &v1.QuoteHandler{Service: &quote.Service{UOW: &database.UnitOfWork{DB: db}, Region: "US", TTL: time.Minute}}, Orders: &v1.OrderHandler{Service: &order.Service{Repo: repo, UOW: &database.UnitOfWork{DB: db}, Currency: "USD"}}, Products: &v1.ProductHandler{Service: &product.Service{Repo: &database.ProductRepository{DB: db}}, Currency: "USD"}, Readiness: func(context.Context) error { return nil }})
-	call := func(method, path, token string, body any, want int) map[string]any {
+	call := func(method, path, token string, body any, want int, keys ...string) map[string]any {
 		t.Helper()
 		data, err := json.Marshal(body)
 		if err != nil {
@@ -45,6 +45,9 @@ func TestCustomerAndAdminOrderFlow(t *testing.T) {
 		}
 		request := httptest.NewRequest(method, path, bytes.NewReader(data))
 		request.Header.Set("Content-Type", "application/json")
+		for _, key := range keys {
+			request.Header.Add("Idempotency-Key", key)
+		}
 		if token != "" {
 			request.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -105,7 +108,7 @@ func TestCustomerAndAdminOrderFlow(t *testing.T) {
 	call("POST", "/api/v1/orders", customer, map[string]any{"items": []map[string]any{{"product_id": p1, "quantity": 1, "unit_price_minor": 1}}}, 400)
 	cancelID := call("POST", "/api/v1/orders", customer, payload, 201)["id"].(string)
 	call("POST", "/api/v1/orders/"+cancelID+"/cancel", customer, nil, 200)
-	call("POST", "/api/v1/orders/"+cancelID+"/cancel", customer, nil, 409)
+	call("POST", "/api/v1/orders/"+cancelID+"/cancel", customer, nil, 200)
 	if n, err := repo.ProcessBatch(context.Background(), time.Now(), 500); err != nil || n != 1 {
 		t.Fatalf("processing count: %d %v", n, err)
 	}
@@ -143,6 +146,42 @@ func TestCustomerAndAdminOrderFlow(t *testing.T) {
 	call("POST", "/api/v1/orders", customer, map[string]any{"quote_id": quotedID, "items": payload["items"]}, 422)
 	call("POST", "/api/v1/order-quotes", customer, map[string]any{"region": "XX", "items": payload["items"]}, 422)
 	call("POST", "/api/v1/order-quotes", customer, map[string]any{"region": "IN", "items": payload["items"]}, 409)
+	// General idempotency applies to both request forms, with customer isolation.
+	keyed := call("POST", "/api/v1/orders", customer, payload, 201, "checkout-1")
+	// Whitespace, object property order and UUID letter case are not new payloads.
+	equivalent := json.RawMessage(`{ "items": [{"quantity":2,"product_id":"` + strings.ToUpper(p1) + `"},{"quantity":3,"product_id":"` + p2 + `"}] }`)
+	if retry := call("POST", "/api/v1/orders", customer, equivalent, 200, "checkout-1"); retry["id"] != keyed["id"] {
+		t.Fatal("key retry duplicated order")
+	}
+	changed := map[string]any{"items": []map[string]any{{"product_id": p1, "quantity": 3}}}
+	conflict := call("POST", "/api/v1/orders", customer, changed, 409, "checkout-1")
+	if conflict["details"].(map[string]any)["reason"] != "idempotency_key_conflict" {
+		t.Fatalf("wrong conflict reason: %+v", conflict)
+	}
+	if own := call("POST", "/api/v1/orders", other, payload, 201, "checkout-1"); own["id"] == keyed["id"] {
+		t.Fatal("key leaked another customer's order")
+	}
+	for _, key := range []string{"", "contains spaces", strings.Repeat("a", 129)} {
+		call("POST", "/api/v1/orders", customer, payload, 422, key)
+	}
+	call("POST", "/api/v1/orders", customer, payload, 422, "first", "second")
+	keyedID := keyed["id"].(string)
+	call("POST", "/api/v1/orders/"+keyedID+"/cancel", customer, nil, 200)
+	call("POST", "/api/v1/orders/"+keyedID+"/cancel", customer, nil, 200)
+	call("POST", "/api/v1/orders/"+keyedID+"/cancel", other, nil, 404)
+	if retry := call("POST", "/api/v1/orders", customer, payload, 200, "checkout-1"); retry["status"] != "CANCELLED" || retry["id"] != keyedID {
+		t.Fatal("retry must return current state of original order")
+	}
+	quoteBody := map[string]string{"quote_id": quotedID}
+	for _, key := range []string{"quote-key-1", "quote-key-2", "quote-key-1"} {
+		if retry := call("POST", "/api/v1/orders", customer, quoteBody, 200, key); retry["id"] != createdQuoteOrder["id"] {
+			t.Fatal("keyed quote replay duplicated order")
+		}
+	}
+	// Both aliases must retain their binding; neither can later create a different purchase.
+	call("POST", "/api/v1/orders", customer, payload, 409, "quote-key-1")
+	call("POST", "/api/v1/orders", customer, payload, 409, "quote-key-2")
+	call("POST", "/api/v1/orders", customer, quoteBody, 409, "checkout-1")
 	call("POST", "/api/v1/auth/logout", customer, nil, 204)
 	call("GET", "/api/v1/orders", customer, nil, 401)
 	if call("GET", "/api/v1/auth/session", customer, nil, 200)["authenticated"] != false {

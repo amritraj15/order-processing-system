@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v5"
+	"order_management/domain/shared"
 )
 
 func TestJSONBinderAndErrorEnvelope(t *testing.T) {
@@ -47,6 +49,24 @@ func TestJSONBinderAndErrorEnvelope(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRetryableTimeoutResponse(t *testing.T) {
+	for _, cause := range []error{shared.ErrUnavailable, context.DeadlineExceeded} {
+		e := NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)))
+		e.POST("/timeout", func(c *echo.Context) error {
+			return errors.Join(cause, errors.New("private database details"))
+		})
+		res := httptest.NewRecorder()
+		e.ServeHTTP(res, httptest.NewRequest("POST", "/timeout", nil))
+		if res.Code != 503 || res.Header().Get("Retry-After") != "1" || strings.Contains(res.Body.String(), "private") {
+			t.Fatalf("unsafe or non-retryable timeout: %d %s", res.Code, res.Body)
+		}
+		var body APIError
+		if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil || body.Error != "temporarily unavailable" {
+			t.Fatalf("wrong timeout body: %s", res.Body)
+		}
 	}
 }
 
