@@ -113,7 +113,7 @@ changes reviewable; startup does not perform GORM auto-migration.
 Existing-data upgrades require a maintenance window: stop old writers, apply
 migrations, explicitly adopt the original catalog currency where required, import
 rates and start the compatible application. Readiness currently expects exactly
-schema version 4, so zero-downtime mixed-version upgrades are not established.
+schema version 5, so zero-downtime mixed-version upgrades are not established.
 Down migrations guard against losing pricing provenance; after new monetary
 writes, prefer forward repair. Migration rollback tests use disposable data.
 
@@ -263,6 +263,17 @@ status/body, which gives exact response replay but returns historical state and
 adds response storage/versioning concerns. This API intentionally guarantees
 purchase identity, not byte-for-byte reproduction of the first response.
 
+**Migration compatibility:** 000004 is kept unchanged. Some earlier installations
+may have applied it before `created_at` was added, so
+[migration 000005](db/migrations/000005_idempotency_created_at.up.sql) uses
+`ADD COLUMN IF NOT EXISTS` to bring either version-4 schema forward. Existing
+column values are preserved; legacy keys without a timestamp receive the upgrade
+time rather than a guessed historical time. This conservatively delays any future
+expiry. The 000005 down step retains this backward-compatible column/metadata;
+000004 still refuses to drop a nonempty table. Readiness requires schema version 5.
+A guard failure leaves golang-migrate dirty and requires operator investigation;
+tests asserting refusal use disposable schemas, never a live application database.
+
 **Retention decision:** the database writes `created_at = clock_timestamp()` on
 first successful insertion. GORM reads this field but does not generate or update
 it; replay does not extend retention. The proposed production window is **30 days
@@ -288,7 +299,10 @@ driver to cancel/roll back; a broken network may delay server-side cleanup, so t
 are execution budgets, not a strict response-time guarantee.
 
 PostgreSQL lock/statement cancellation and context deadline failures produce a
-safe 503 with `Retry-After: 1`. Clients retry with backoff using the original key
+safe 503 with `Retry-After: 1`. SQLSTATE 57014 covers query cancellation more
+broadly than statement timeout, including cancellation after a client disconnect.
+In that case the 503 may have no receiver; distinguish caller cancellation from
+server timeout when adding error metrics to avoid overstating server failures. Clients retry with backoff using the original key
 and payload; a timeout near commit can have an ambiguous outcome. Timeout tests
 check rollback and successful retry after releasing the blocking condition.
 These limits reduce stalls in the 20-connection pool per instance but cannot
@@ -553,7 +567,7 @@ keyed creation now has a 10s context budget and transaction-local 2s lock/5s
 statement limits. General deadlines for other requests remain future work.
 
 Liveness says the process responds. Readiness additionally verifies schema version
-4, a clean migration state, initialized catalog settings and local worker health.
+5, a clean migration state, initialized catalog settings and local worker health.
 The worker has two intervals of startup grace; a failed run is unhealthy immediately,
 a success older than two intervals is stale, and an active attempt lasting one
 interval is stale. Successful empty runs restore health. Maintenance cleanup errors

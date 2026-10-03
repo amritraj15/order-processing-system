@@ -268,7 +268,7 @@ batches remain processed and outstanding rows are retried at the next tick.
 Shutdown cancels active worker database operations. The worker also purges
 expired logout tokens using an expiry index. JSON logs include processed count,
 duration, and failures. `/health` and `/api/v1/health` are liveness probes;
-`/api/v1/ready` checks schema version 4, initialized catalog settings and local worker health. It exposes safe last-attempt/success/failure timestamps. Startup grace is two intervals; failed runs are unhealthy immediately, stale success after two intervals is unhealthy, and a successful run (including an empty queue) restores readiness. Each drain has a one-interval deadline. Quote cleanup is bounded to 500 rows per tick, eligible 24 hours after expiry; cleanup failures are logged separately.
+`/api/v1/ready` checks schema version 5, initialized catalog settings and local worker health. It exposes safe last-attempt/success/failure timestamps. Startup grace is two intervals; failed runs are unhealthy immediately, stale success after two intervals is unhealthy, and a successful run (including an empty queue) restores readiness. Each drain has a one-interval deadline. Quote cleanup is bounded to 500 rows per tick, eligible 24 hours after expiry; cleanup failures are logged separately.
 
 ## Local development and tests
 
@@ -473,8 +473,15 @@ It does not use an existing application database. A failed prerequisite returns
 nonzero and records a blocked run, never a successful acceptance result.
 
 Migrations 000002/000003 add catalog/rates/quotes and optional legacy provenance.
-Migration 000004 adds durable idempotency records; deploy it before starting this
-binary. Its down migration refuses while keys exist to preserve retry guarantees.
+Migration 000004 adds durable idempotency records. Migration 000005 adds
+`created_at` if an earlier version-4 database lacks it, preserving timestamps in
+databases that already have the column. Apply all migrations before starting this
+binary; readiness requires version 5. Existing keys missing timestamps receive
+the upgrade time, conservatively starting their retention age then. No database
+volume reset is needed. Migration 000005's down step keeps the compatible column
+and its data; 000004's down step refuses while keys exist to preserve retry
+guarantees. An expected refused downgrade leaves golang-migrate's dirty flag set;
+acceptance tests exercise that refusal only in disposable schemas.
 Use a maintenance window; old writers cannot safely coexist with the new schema.
 The quote down migration refuses while quotes or new-format orders exist. The
 pricing down migration refuses while rates or mismatched order currencies exist.

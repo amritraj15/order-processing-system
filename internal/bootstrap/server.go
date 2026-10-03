@@ -73,7 +73,7 @@ func RunServer(ctx context.Context, cfg configs.Config, logger *slog.Logger) err
 			if err := sql.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations").Scan(&version, &dirty); err != nil {
 				return err
 			}
-			if version != 4 || dirty {
+			if version != 5 || dirty {
 				return errors.New("schema unavailable")
 			}
 			var base string

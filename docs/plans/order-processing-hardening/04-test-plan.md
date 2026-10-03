@@ -161,3 +161,21 @@ and database access; written test cases are not evidence of a passing run.
 The proposed 30-day retention window has no purge implementation or expiry tests;
 keys currently remain indefinitely. Database/HTTP execution of this follow-up
 remains pending environment access; no live timeout result is claimed.
+
+### Version-4 compatibility and execution follow-up
+
+`TestIdempotencyMigrationUpgradeAndNonemptyDowngradeGuard` uses the real migrator
+against isolated schemas. It reconstructs version 4 with and without `created_at`,
+upgrades to version 5, checks existing timestamps/key bindings survive and missing
+timestamps are backfilled conservatively, then verifies 000004 refuses a downgrade
+with durable keys and marks the schema dirty. The 000005 down step retains its
+backward-compatible timestamp metadata. Empty up/down/up acceptance now covers
+all five migration versions.
+
+The requested commands were attempted in the
+[2026-10-03 follow-up](../../reviews/order-processing-hardening/verification/followup-20261003T175704Z/summary.json).
+Dependency resolution and the full test suite were blocked by download DNS;
+`make integration` stopped because no dedicated TEST_DATABASE_URL was configured.
+`make acceptance` stopped at Docker access. Native PostgreSQL initialization also
+failed on prohibited shared-memory allocation. The new migration test, full
+up/down/up round trip and nonempty downgrade guard remain unverified by execution.

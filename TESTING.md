@@ -180,7 +180,7 @@ own migrations and do not depend on demo products or an API process.
 ```bash
 DATABASE_URL="$MIGRATION_DATABASE_URL" bin/orders migrate up 2>&1 \
   | tee "$LOCAL_RESULTS/migrations.log"
-for version in 4 3 2 1; do
+for version in 5 4 3 2 1; do
   DATABASE_URL="$MIGRATION_DATABASE_URL" bin/orders migrate down 2>&1 \
     | tee -a "$LOCAL_RESULTS/migrations.log"
 done

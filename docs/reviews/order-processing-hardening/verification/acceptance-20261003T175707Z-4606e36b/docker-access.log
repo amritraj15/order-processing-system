@@ -1,0 +1,4 @@
+Command: ["docker", "info", "--format", "{{.ServerVersion}}"]
+Exit: 1
+
+permission denied while trying to connect to the docker API at unix:///Users/amritraj/.docker/run/docker.sock

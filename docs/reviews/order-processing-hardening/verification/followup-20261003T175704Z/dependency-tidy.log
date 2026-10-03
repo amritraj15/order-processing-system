@@ -1,0 +1,5 @@
+Command: go mod tidy
+Exit: 1
+Excerpt from the preceding tool execution:
+github.com/labstack/echo/v5@v5.2.1: Get "https://proxy.golang.org/github.com/labstack/echo/v5/@v/v5.2.1.zip": dial tcp: lookup proxy.golang.org: no such host
+The same DNS failure affected GORM, migrate, JWT, validator and x/crypto.
