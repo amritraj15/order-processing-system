@@ -1,0 +1,17 @@
+Command: go test -mod=readonly -count=1 -race ./domain/money ./domain/order ./domain/product ./domain/pricing ./domain/quote ./domain/shared ./service/order ./service/product ./service/quote ./service/uow ./service/processing ./configs ./internal/clock ./internal/logging ./ports
+Exit: 0
+ok  	order_management/domain/money	2.647s
+ok  	order_management/domain/order	1.478s
+?   	order_management/domain/product	[no test files]
+?   	order_management/domain/pricing	[no test files]
+?   	order_management/domain/quote	[no test files]
+?   	order_management/domain/shared	[no test files]
+?   	order_management/service/order	[no test files]
+?   	order_management/service/product	[no test files]
+ok  	order_management/service/quote	1.852s
+?   	order_management/service/uow	[no test files]
+ok  	order_management/service/processing	2.191s
+ok  	order_management/configs	3.769s
+?   	order_management/internal/clock	[no test files]
+ok  	order_management/internal/logging	3.619s
+?   	order_management/ports	[no test files]

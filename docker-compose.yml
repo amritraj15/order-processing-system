@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orders_local}
+      POSTGRES_DB: orders
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  migrate:
+    build: .
+    environment:
+      DATABASE_URL: postgres://orders:${POSTGRES_PASSWORD:-orders_local}@postgres:5432/orders?sslmode=disable
+    command: ["migrate", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgres://orders:${POSTGRES_PASSWORD:-orders_local}@postgres:5432/orders?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (at least 32 bytes)}
+      JWT_ISSUER: ${JWT_ISSUER:-order-management}
+      JWT_TOKEN_TTL: ${JWT_TOKEN_TTL:-24h}
+      CURRENCY: ${CURRENCY:-}
+      STORE_REGION: ${STORE_REGION:-US}
+      QUOTE_TTL: ${QUOTE_TTL:-5m}
+      AUTH_LOGIN_LIMIT: ${AUTH_LOGIN_LIMIT:-10}
+      AUTH_REGISTER_LIMIT: ${AUTH_REGISTER_LIMIT:-5}
+      AUTH_RATE_WINDOW: ${AUTH_RATE_WINDOW:-1m}
+      AUTH_RATE_MAX_KEYS: ${AUTH_RATE_MAX_KEYS:-10000}
+      AUTH_MAX_IN_FLIGHT: ${AUTH_MAX_IN_FLIGHT:-4}
+      HTTP_ADDRESS: :8080
+      PROCESSING_INTERVAL: ${PROCESSING_INTERVAL:-5m}
+      PROCESSING_BATCH_SIZE: ${PROCESSING_BATCH_SIZE:-500}
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/v1/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    init: true
+volumes:
+  postgres_data:

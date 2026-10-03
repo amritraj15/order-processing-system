@@ -1,0 +1,5 @@
+surge
+.cache
+.git
+.env
+bin

@@ -1,0 +1,23 @@
+{
+  "run_id": "20261003T131746Z-9ac01b21",
+  "status": "blocked",
+  "checks": [
+    {
+      "name": "go-version",
+      "exit_code": 0,
+      "seconds": 0.037
+    },
+    {
+      "name": "docker-access",
+      "exit_code": 1,
+      "seconds": 0.693
+    },
+    {
+      "name": "compose-version",
+      "exit_code": 0,
+      "seconds": 0.087
+    }
+  ],
+  "cleanup": "not needed",
+  "error": "Execution prerequisites unavailable; acceptance did not run"
+}

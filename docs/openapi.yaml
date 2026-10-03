@@ -1,0 +1,874 @@
+---
+openapi: 3.0.3
+info:
+  title: Order Processing API
+  version: 1.1.0
+  description: Customer/admin orders with immutable base catalog prices and expiring
+    region-selected quotes. All responses include a server-generated X-Request-ID.
+    Managed rates are not live market data.
+servers:
+- url: "/"
+security:
+- BearerAuth: []
+paths:
+  "/health":
+    get:
+      security: []
+      summary: Liveness
+      responses:
+        '200':
+          description: Application is running
+  "/api/v1/health":
+    get:
+      security: []
+      summary: Liveness
+      responses:
+        '200':
+          description: Application is running
+  "/api/v1/ready":
+    get:
+      security: []
+      summary: Database schema and local worker readiness
+      responses:
+        '200':
+          description: Readiness
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Readiness"
+        '503':
+          description: Readiness
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Readiness"
+  "/api/v1/auth/register":
+    post:
+      security: []
+      summary: Register a customer and issue an access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - name
+              - email
+              - password
+              properties:
+                name:
+                  type: string
+                  minLength: 2
+                  maxLength: 64
+                email:
+                  type: string
+                  format: email
+                  maxLength: 255
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 72
+                  description: Also limited to 72 UTF-8 bytes by bcrypt
+      responses:
+        '201':
+          "$ref": "#/components/responses/Session"
+        '400':
+          "$ref": "#/components/responses/Error"
+        '409':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+        '429':
+          description: Process-local attempt/concurrency limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until retry
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
+  "/api/v1/auth/login":
+    post:
+      security: []
+      summary: Authenticate email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - email
+              - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 255
+                password:
+                  type: string
+                  maxLength: 72
+      responses:
+        '200':
+          "$ref": "#/components/responses/Session"
+        '400':
+          "$ref": "#/components/responses/Error"
+        '401':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+        '429':
+          description: Process-local attempt/concurrency limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until retry
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Error"
+  "/api/v1/auth/session":
+    get:
+      security:
+      - {}
+      - BearerAuth: []
+      summary: Inspect an optional Bearer token
+      description: Absent, expired, or revoked tokens return authenticated false.
+      responses:
+        '200':
+          "$ref": "#/components/responses/Session"
+  "/api/v1/me":
+    get:
+      security:
+      - {}
+      - BearerAuth: []
+      summary: Compatibility alias for auth/session
+      responses:
+        '200':
+          "$ref": "#/components/responses/Session"
+  "/api/v1/auth/logout":
+    post:
+      security:
+      - {}
+      - BearerAuth: []
+      summary: Revoke this Bearer token until expiry
+      description: A request without credentials is an idempotent no-op.
+      responses:
+        '204':
+          description: Logged out
+        '401':
+          "$ref": "#/components/responses/Error"
+  "/api/v1/products":
+    get:
+      summary: Browse products
+      parameters:
+      - "$ref": "#/components/parameters/Limit"
+      - "$ref": "#/components/parameters/Cursor"
+      responses:
+        '200':
+          description: Newest products first
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - items
+                - next_cursor
+                properties:
+                  items:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/Product"
+                  next_cursor:
+                    type: string
+                    format: uuid
+                    nullable: true
+        '401':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+    post:
+      summary: Admin creates a product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - sku
+              - name
+              - price_minor
+              properties:
+                sku:
+                  type: string
+                  maxLength: 64
+                name:
+                  type: string
+                  maxLength: 255
+                price_minor:
+                  type: integer
+                  format: int64
+                  minimum: 1
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Product URL
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Product"
+        '400':
+          "$ref": "#/components/responses/Error"
+        '401':
+          "$ref": "#/components/responses/Error"
+        '403':
+          "$ref": "#/components/responses/Error"
+        '409':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+  "/api/v1/products/{id}":
+    parameters:
+    - "$ref": "#/components/parameters/ID"
+    get:
+      summary: Retrieve a product
+      responses:
+        '200':
+          description: Product
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Product"
+        '401':
+          "$ref": "#/components/responses/Error"
+        '404':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+  "/api/v1/orders":
+    get:
+      summary: List own orders (customer) or all orders (admin)
+      parameters:
+      - "$ref": "#/components/parameters/Limit"
+      - "$ref": "#/components/parameters/Cursor"
+      - name: status
+        in: query
+        schema:
+          "$ref": "#/components/schemas/Status"
+      responses:
+        '200':
+          description: Newest orders first
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - items
+                - next_cursor
+                properties:
+                  items:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/Order"
+                  next_cursor:
+                    type: string
+                    format: uuid
+                    nullable: true
+        '401':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+    post:
+      summary: Create a base-currency order or consume an owned quote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    minItems: 1
+                    maxItems: 100
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                      - product_id
+                      - quantity
+                      properties:
+                        product_id:
+                          type: string
+                          format: uuid
+                        quantity:
+                          type: integer
+                          format: int64
+                          minimum: 1
+              - type: object
+                additionalProperties: false
+                required:
+                - quote_id
+                properties:
+                  quote_id:
+                    type: string
+                    format: uuid
+      responses:
+        '201':
+          description: Created in PENDING status
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Order URL
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Order"
+        '400':
+          "$ref": "#/components/responses/Error"
+        '401':
+          "$ref": "#/components/responses/Error"
+        '403':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+        '200':
+          description: Order
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Order"
+        '404':
+          "$ref": "#/components/responses/Error"
+        '409':
+          "$ref": "#/components/responses/Error"
+      description: Use items alone for a direct base-currency purchase. Use quote_id
+        alone for an accepted regional quote. A successful retry of the same quote
+        returns the existing order with 200, even after expiry; new orders return
+        201.
+  "/api/v1/orders/{id}":
+    parameters:
+    - "$ref": "#/components/parameters/ID"
+    get:
+      summary: Retrieve an accessible order
+      responses:
+        '200':
+          "$ref": "#/components/responses/Order"
+        '401':
+          "$ref": "#/components/responses/Error"
+        '404':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+  "/api/v1/orders/{id}/status":
+    parameters:
+    - "$ref": "#/components/parameters/ID"
+    patch:
+      summary: Admin advances an order by exactly one stage
+      description: PENDING to PROCESSING to SHIPPED to DELIVERED. CANCELLED and DELIVERED
+        are terminal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - status
+              properties:
+                status:
+                  type: string
+                  enum:
+                  - PROCESSING
+                  - SHIPPED
+                  - DELIVERED
+      responses:
+        '200':
+          "$ref": "#/components/responses/Order"
+        '400':
+          "$ref": "#/components/responses/Error"
+        '401':
+          "$ref": "#/components/responses/Error"
+        '403':
+          "$ref": "#/components/responses/Error"
+        '404':
+          "$ref": "#/components/responses/Error"
+        '409':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+  "/api/v1/orders/{id}/cancel":
+    parameters:
+    - "$ref": "#/components/parameters/ID"
+    post:
+      summary: Customer cancels an owned PENDING order
+      responses:
+        '200':
+          "$ref": "#/components/responses/Order"
+        '401':
+          "$ref": "#/components/responses/Error"
+        '403':
+          "$ref": "#/components/responses/Error"
+        '404':
+          "$ref": "#/components/responses/Error"
+        '409':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+  "/api/v1/order-quotes":
+    post:
+      summary: Customer obtains an expiring regional price quote
+      description: Missing or expired conversion rates return 409. Amounts and prices
+        are determined by the server; no client-supplied rates. Changing items or
+        region requires a new quote.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/QuoteRequest"
+      responses:
+        '201':
+          description: Quote
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/Quote"
+        '400':
+          "$ref": "#/components/responses/Error"
+        '401':
+          "$ref": "#/components/responses/Error"
+        '403':
+          "$ref": "#/components/responses/Error"
+        '409':
+          "$ref": "#/components/responses/Error"
+        '422':
+          "$ref": "#/components/responses/Error"
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      description: Last UUID from the previous page; retain other filters
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Error:
+      description: Error (see HTTP status)
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/Error"
+    Session:
+      description: Authentication result
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/Session"
+    Order:
+      description: Order including purchased item snapshots
+      content:
+        application/json:
+          schema:
+            "$ref": "#/components/schemas/Order"
+  schemas:
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: string
+        details:
+          type: object
+          additionalProperties:
+            type: string
+    Session:
+      type: object
+      required:
+      - authenticated
+      properties:
+        authenticated:
+          type: boolean
+        token:
+          type: string
+          description: Present on registration and login
+        expires_at:
+          type: integer
+          format: int64
+          description: Unix seconds
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+              format: email
+            status:
+              type: string
+              enum:
+              - active
+            role:
+              type: string
+              enum:
+              - customer
+              - admin
+    Status:
+      type: string
+      enum:
+      - PENDING
+      - PROCESSING
+      - SHIPPED
+      - DELIVERED
+      - CANCELLED
+    Product:
+      type: object
+      required:
+      - id
+      - sku
+      - name
+      - price_minor
+      - currency
+      - created_at
+      - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        price_minor:
+          type: integer
+          format: int64
+          minimum: 1
+        currency:
+          type: string
+          example: USD
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Order:
+      type: object
+      required:
+      - id
+      - customer_id
+      - status
+      - currency
+      - total_minor
+      - items
+      - created_at
+      - updated_at
+      - pricing
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        status:
+          "$ref": "#/components/schemas/Status"
+        currency:
+          type: string
+          example: USD
+        total_minor:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OrderItem"
+        pricing:
+          "$ref": "#/components/schemas/Pricing"
+    QuoteRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      properties:
+        region:
+          type: string
+          enum:
+          - US
+          - IN
+          - GB
+          - JP
+          - KW
+          - DE
+          - FR
+          description: Defaults to STORE_REGION
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - product_id
+            - quantity
+            properties:
+              product_id:
+                type: string
+                format: uuid
+              quantity:
+                type: integer
+                format: int64
+                minimum: 1
+    Pricing:
+      type: object
+      required:
+      - mode
+      - quote_id
+      - region
+      - mapping_version
+      - source_currency
+      - source_total_minor
+      - base_digits
+      - target_digits
+      - rate
+      - rate_id
+      - rate_source
+      - rate_valid_from
+      - rate_valid_until
+      properties:
+        mode:
+          type: string
+          enum:
+          - legacy
+          - base
+          - quote
+        quote_id:
+          type: string
+          nullable: true
+          format: uuid
+        region:
+          type: string
+          nullable: true
+        mapping_version:
+          type: string
+          nullable: true
+        source_currency:
+          type: string
+          nullable: true
+        source_total_minor:
+          type: integer
+          nullable: true
+          format: int64
+        base_digits:
+          type: integer
+          nullable: true
+        target_digits:
+          type: integer
+          nullable: true
+        rate:
+          type: string
+          nullable: true
+          description: Exact decimal target-major/base-major rate
+        rate_id:
+          type: string
+          nullable: true
+          format: uuid
+        rate_source:
+          type: string
+          nullable: true
+        rate_valid_from:
+          type: string
+          nullable: true
+          format: date-time
+        rate_valid_until:
+          type: string
+          nullable: true
+          format: date-time
+      description: Immutable provenance. Legacy records have unknown values set to
+        null.
+    OrderItem:
+      type: object
+      required:
+      - product_id
+      - sku
+      - name
+      - quantity
+      - unit_price_minor
+      - line_total_minor
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        quantity:
+          type: integer
+          format: int64
+        unit_price_minor:
+          type: integer
+          format: int64
+        line_total_minor:
+          type: integer
+          format: int64
+        source_unit_price_minor:
+          type: integer
+          nullable: true
+          format: int64
+        source_line_total_minor:
+          type: integer
+          nullable: true
+          format: int64
+    Quote:
+      type: object
+      required:
+      - id
+      - region
+      - mapping_version
+      - base_currency
+      - currency
+      - rate
+      - rate_id
+      - rate_source
+      - rate_valid_from
+      - rate_valid_until
+      - expires_at
+      - source_total_minor
+      - total_minor
+      - items
+      properties:
+        id:
+          type: string
+          format: uuid
+        region:
+          type: string
+        mapping_version:
+          type: string
+        base_currency:
+          type: string
+        currency:
+          type: string
+        rate:
+          type: string
+        rate_id:
+          type: string
+          nullable: true
+          format: uuid
+        rate_source:
+          type: string
+        rate_valid_from:
+          type: string
+          nullable: true
+          format: date-time
+        rate_valid_until:
+          type: string
+          nullable: true
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        source_total_minor:
+          type: integer
+          format: int64
+        total_minor:
+          type: integer
+          format: int64
+        items:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OrderItem"
+    Readiness:
+      type: object
+      required:
+      - status
+      - checks
+      - worker
+      properties:
+        status:
+          type: string
+          enum:
+          - ok
+          - unavailable
+        checks:
+          type: object
+          properties:
+            database:
+              type: string
+              enum:
+              - ok
+              - unavailable
+            worker:
+              type: string
+              enum:
+              - ok
+              - starting
+              - failed
+              - stale
+              - stopped
+              - unavailable
+        worker:
+          type: object
+          properties:
+            last_attempt_at:
+              type: string
+              nullable: true
+              format: date-time
+            last_success_at:
+              type: string
+              nullable: true
+              format: date-time
+            last_failure_at:
+              type: string
+              nullable: true
+              format: date-time
+            running:
+              type: boolean

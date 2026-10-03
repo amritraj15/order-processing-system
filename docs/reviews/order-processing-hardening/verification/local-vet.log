@@ -1,0 +1,2 @@
+Command: go vet -mod=readonly ./domain/money ./domain/order ./domain/product ./domain/pricing ./domain/quote ./domain/shared ./service/order ./service/product ./service/quote ./service/uow ./service/processing ./configs ./internal/clock ./internal/logging ./ports
+Exit: 0

@@ -1,0 +1,3 @@
+Command: ["go", "version"]
+Exit: 0
+go version go1.26.2 darwin/arm64

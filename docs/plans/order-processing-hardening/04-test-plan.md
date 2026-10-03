@@ -1,0 +1,116 @@
+# Order processing test and acceptance plan
+
+This plan maps the five assignment requirements to existing automated tests and
+the [live-demo runbook](05-live-demo.md). Coverage listed here describes test
+intent; it does not mean the tests have passed.
+
+**Execution status, 2026-10-03:** local arithmetic, order, quote service, worker,
+configuration and logging tests passed. Full build, auth/HTTP tests, PostgreSQL
+integration and Docker smoke remain blocked by the environment. See the
+[recorded evidence](../../reviews/order-processing-hardening/verification/README.md).
+The live demo below has not yet been executed.
+
+## Requirement coverage
+
+| ID / requirement | Acceptance criteria, including rejection cases | Existing automated coverage | Live proof |
+| --- | --- | --- | --- |
+| R1 — Create a multi-item order | Customer submits two products, quantities 2 and 3; returns 201, PENDING, two snapshots and USD 3495 minor units. Reject empty items, nonpositive quantities, duplicate/unknown products, client prices and overflow. A failed write leaves no partial order. | `TestNewSnapshotsCatalogPricesAndTotals`, `TestNewRejectsInvalidOrders` in [domain tests](../../../domain/order/order_test.go); `TestCustomerAndAdminOrderFlow` in [HTTP/DB tests](../../../api/rest/routes/routes_integration_test.go); `TestOrderTransactionSnapshotsAndStatus` in [repository tests](../../../db/gorm/order_repository_integration_test.go). | D1; invalid payloads in D2. |
+| R2 — Retrieve by order ID | GET returns the same ID, items, totals and current status. Unknown ID and another customer's order return 404. | `TestCustomerAndAdminOrderFlow`; `TestOrderTransactionSnapshotsAndStatus`. | D2 and reads after D4/D6. |
+| R3a — Update order status | PENDING → PROCESSING → SHIPPED → DELIVERED; only one forward stage at a time. Skip, reverse and repeated transitions return 409; customer status changes return 403. | `TestStatusTransitions` in domain tests; `TestCustomerAndAdminOrderFlow`; `TestOrderTransactionSnapshotsAndStatus`. | D1 rejects a skipped stage; D4 completes lifecycle; D7 exercises manual PENDING → PROCESSING. |
+| R3b — Process PENDING every five minutes | First worker run occurs five minutes after process startup, then every five minutes. It advances eligible PENDING orders without a status API call; cancelled/delivered orders remain unchanged. | `TestLoadDefaultsAndValidation` in [configuration tests](../../../configs/config_test.go); `TestRunWaitsForFirstTick`, `TestDrainProcessesFullAndShortBatches`, `TestDrainStopsOnFailureAndCancellation` in [worker tests](../../../service/processing/worker_test.go); `TestPendingBatchesConcurrencyCutoffAndQueryPlan` and `TestPendingSkipsLockedRowsAndRollsBackFailedBatch` in repository tests; [Docker smoke](../../../scripts/smoke-docker.sh) exercises a **5-second** interval. | D0 resets the timer; D4 proves first tick; D6 proves recurrence with two timestamped attempts about 300 seconds apart. Unit tests/short smoke do not measure real five-minute cadence. |
+| R4 — List orders, optionally by status | Unfiltered list contains all accessible orders across pages; status filter returns only that status. Customer sees own orders, admin sees all. Invalid filter/page size returns 422. | `TestCustomerAndAdminOrderFlow` covers customer isolation, admin visibility, filtering, cursor pages and invalid filters. [API smoke](../../../scripts/smoke.py) also covers delivered filtering and pagination. | D3 unfiltered/CANCELLED lists and cursor page; D4 DELIVERED list; D5 cross-customer admin visibility. |
+| R5 — Cancel only PENDING | PENDING → CANCELLED returns 200 and stays cancelled after worker ticks. Cancellation of PROCESSING, SHIPPED, DELIVERED or already CANCELLED returns 409. A processing/cancellation race has exactly one winner. | `TestStatusTransitions`; `TestCustomerAndAdminOrderFlow`; `TestCancellationAndProcessingRace` in repository tests. | D1 successful/repeated cancellation; D4 rejection at each later stage; D6 cancelled state persists. |
+
+The HTTP/DB scenario controls processing directly, so its successful cancellation
+assertion is deterministic. The accelerated Docker smoke accepts either a
+successful cancellation or a 409 when the worker wins. That smoke outcome alone
+does not prove successful cancellation; retain the controlled integration and
+live-demo evidence too.
+
+## Approved supporting behavior
+
+| Area | Automated evidence to run | Live coverage |
+| --- | --- | --- |
+| Authentication, roles and logout | [JWT tests](../../../service/auth/jwt/client_test.go): `TestRegisterLoginSessionLogout`, `TestRejectsInvalidJWTAndChecksCurrentRole`, `TestLoginVerifiesMissingAndInactiveAccounts`; HTTP/DB scenario. | Setup provisions admin and registers two customers; D2 checks 401/403/404; D5 proves customer isolation and admin visibility; D7 logs out. |
+| Catalog and immutable prices | Domain snapshot test, repository transaction/snapshot test, HTTP/DB product authorization and duplicate SKU checks. | Setup creates USD 1299/299 products; D1 verifies server totals; D2 rejects a supplied price. Product editing is outside scope; price-change snapshot regression is a DB test. |
+| Regional currency and managed rates | [Money tests](../../../domain/money/money_test.go) cover minor-unit precision, half-even rounding and overflow. [Quote service tests](../../../service/quote/service_test.go) cover expiry, ownership, rate snapshots and replay. [Pricing integration tests](../../../db/gorm/pricing_integration_test.go) cover concurrent single consumption, expiry after lock waits, rollback, serialized initialization/import and legacy adoption. | D5 compares default US/USD and explicit IN/INR quotes, consumes and replays a quote, verifies original USD order, rejects missing rates/unknown regions/foreign quote use. Fixture rate 2 is a demonstration value, not a market rate. |
+| Auth throttling and input handling | [Limiter tests](../../../api/rest/middleware/rate_limit_test.go), [password tests](../../../domain/user/user_test.go), [HTTP binder/error tests](../../../api/rest/server_test.go). | D2 includes invalid input and denied actions. Use automated evidence for limiter capacity/concurrency and forwarded-header behavior. |
+| Worker health, logging and concurrency | [Worker status tests](../../../service/processing/status_test.go), [readiness route test](../../../api/rest/routes/readiness_test.go), request log test in server tests and [logging context test](../../../internal/logging/logging_test.go). Repository tests exercise multiple workers, locks and cancellation races. | D0/D4/D6 show readiness, run IDs, counts and timestamps. Failure recovery and concurrency are shown from automated logs, not induced in the timed demo. |
+| Migrations and bounded queue/cleanup | [Migration tests](../../../db/gorm/migrations_integration_test.go), pricing tests, pending-batch query-plan test. Retain verbose EXPLAIN output. | Rehearsal artifacts. The small live dataset is not evidence of throughput or index scaling. |
+
+## Execution order
+
+Run from the repository root on a host with Go 1.26, Python 3, Make, dependency
+downloads, Docker Compose and permission to run PostgreSQL 18 containers. Reserve
+the Docker smoke ports (18080/15432 by default); the live demo uses 18081/15433.
+
+```sh
+# Preferred complete rehearsal: provisions its own disposable database.
+make acceptance
+```
+
+The runner records prerequisite results, dependency resolution, manifest snapshots,
+module verification, format/build/vet/race results, migration up/down/up,
+PostgreSQL integration/EXPLAIN and Docker smoke in
+`docs/reviews/order-processing-hardening/verification/acceptance-<run-id>/`.
+Review `summary.json` and logs; a blocked or failed run is not acceptance.
+Dependency resolution can update go.mod/go.sum; retain and review those changes.
+
+For diagnosis or a focused rerun after a fix:
+
+```sh
+go mod tidy
+make fmt-check
+make build
+make vet
+make test
+
+# Set this to a dedicated disposable PostgreSQL database; schema creation required.
+export TEST_DATABASE_URL='postgres://orders:orders_local@127.0.0.1:15433/orders?sslmode=disable'
+make integration
+
+# Focused original-requirements API/DB acceptance.
+go test -mod=readonly -count=1 -race -v -tags=integration \
+  ./api/rest/routes -run '^TestCustomerAndAdminOrderFlow$'
+
+# Concurrency, transaction and query-plan checks.
+go test -mod=readonly -count=1 -race -v -tags=integration ./db/gorm
+
+# Isolated API/worker rehearsal; interval is deliberately shortened to five seconds.
+make smoke-docker
+```
+
+These focused commands assume a database is already running; they do not provision
+one. Integration tests create/drop unique test schemas. Migration rollback must
+only target disposable data. Do not run integration or smoke against the timed
+live-demo API while presenting; it adds load and can change authentication quotas.
+
+## Demo sequence and evidence
+
+Allow preparation/build time separately, then **15–20 minutes** to present the
+[runbook](05-live-demo.md). Reserve the first ten minutes after D0 for two real
+worker ticks. Use the first interval for order creation, reads, cancellation and
+lists; use the second interval for regional pricing and access controls.
+
+Record the source version (commit if available; otherwise a saved source snapshot),
+Go/Docker/PostgreSQL versions, acceptance artifact directory, demo date and operator,
+and the dedicated Compose project. Record HTTP statuses, relevant order/quote IDs,
+expected versus actual amounts, worker attempt timestamps and run logs. The
+runbook writes redacted HTTP bodies and worker evidence into a per-run directory.
+Do not attach raw auth responses, passwords or tokens.
+
+| Sign-off item | Result to enter | Required evidence |
+| --- | --- | --- |
+| Full automated acceptance | NOT RUN / PASS / FAIL / BLOCKED | Runner summary and logs; no required stage skipped. |
+| R1 create | NOT RUN / PASS / FAIL | 201, two items, USD 3495, PENDING. |
+| R2 retrieve | NOT RUN / PASS / FAIL | Same ID/data; unknown/foreign 404. |
+| R3a transitions | NOT RUN / PASS / FAIL | Ordered lifecycle, manual processing, forbidden/invalid transitions. |
+| R3b five-minute worker | NOT RUN / PASS / FAIL | Interval 5m, two distinct successful ticks about 300s apart, two automatically advanced orders. |
+| R4 list/filter | NOT RUN / PASS / FAIL | Unfiltered pages, filtered statuses, customer/admin scope. |
+| R5 cancel | NOT RUN / PASS / FAIL | Pending success, later/repeat rejection, still cancelled after worker. |
+| Supporting behavior | NOT RUN / PASS / FAIL | D5 pricing/ownership and D7 logout, plus supporting automated logs. |
+
+Mark each row independently. Core demo completion requires every R1–R5 assertion
+to pass, including both R3 rows. Full acceptance additionally requires successful
+automated stages. A fast smoke or presentation using saved evidence can support a
+walkthrough, but must be labelled as such and cannot close the live timing check.
