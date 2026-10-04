@@ -870,17 +870,29 @@ In the standard integration fixture (1,201 pending rows) PostgreSQL chose a
 bitmap scan over the pending set for the `UPDATE ... FROM batch` side. An opt-in
 test (`BACKLOG_ROWS=200000`, see [TESTING.md](TESTING.md#optional-large-backlog-plan-comparison))
 seeds 200,000 pending and 50,000 delivered rows and drains them in 400 committed
-batches of 500. In the author's PostgreSQL 18.4 run (one local connection, warm
-cache, no concurrent traffic), the planner used primary-key lookups for the
-selected rows at both full backlog and with 10% remaining. Batch execution under
-`EXPLAIN ANALYZE` took 8.80 ms and 8.26 ms respectively; committed batches had a
-median of 5.75 ms and p95 of 9.83 ms, with a total drain time of 2.64 s. Per-batch
-time did not grow over the measured drain. The queue-index scan read more buffers
-near the end (13 initially, 910 with 10% remaining), consistent with processed
-rows leaving dead index entries pending cleanup. Autovacuum settings for `orders`
-matter under sustained churn. A primary-key-array rewrite was about 10% faster
-and was not adopted. These are single-machine plan and timing observations,
-not production throughput claims.
+batches of 500. In the author's supplied PostgreSQL 18.4 rerun (one local
+connection, warm cache, no concurrent API traffic), the production query used
+primary-key lookups at both full backlog and with 10% remaining. Both variants
+passed the processed-count and final-state assertions, including preserving the
+50,000 DELIVERED orders.
+
+| Metric | Production join | Candidate primary-key array |
+| --- | --- | --- |
+| EXPLAIN execution, full backlog / 10% remaining | 4.61 / 5.90 ms | 4.37 / 6.12 ms |
+| Committed batch median / p95 | 5.78 / 9.16 ms | 5.22 / 7.20 ms |
+| Total committed-batch time, 400 batches | 2.49 s | 2.22 s |
+| First ten / last ten batches, mean | 5.25 / 7.78 ms | 5.26 / 6.02 ms |
+
+The production plan remained stable at the two sampled backlog sizes, but its
+last-ten-batch mean was about 1.5 times its first-ten-batch mean. This does not
+establish constant batch cost or prove a causal relationship with backlog size.
+The queue-index scan read more buffers near the end (13 initially, 910 with 10%
+remaining), consistent with processed rows leaving dead index entries pending
+cleanup. Cache state, vacuum and other system activity can affect timings;
+autovacuum settings for `orders` matter under sustained churn. The candidate's
+total committed-batch time was about 11% lower in this run. Production SQL remains
+unchanged. These are local plan and timing observations, not production throughput
+claims or measurements under concurrent API load.
 
 Successful authenticated requests also perform a denylist lookup and a current
 user lookup. Measure that cost alongside order queries. Caching either can delay

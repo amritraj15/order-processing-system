@@ -550,7 +550,9 @@ Checks atomic snapshots/status, database-clock transitions, concurrent bounded b
 
 Compares production batch SQL with a test-only primary-key-array variant. Helpers seed isolated schemas, explain rolled-back batches, summarize plan features and time committed drains. Final counts and batch bounds are checked; plan shape and latency are reported rather than asserted. Skips unless BACKLOG_ROWS is positive.
 
-**Functions and methods:** [backlogEnvInt](../db/gorm/pending_backlog_plan_integration_test.go#L57), [backlogMS](../db/gorm/pending_backlog_plan_integration_test.go#L70), [backlogMean](../db/gorm/pending_backlog_plan_integration_test.go#L74), [backlogExplain](../db/gorm/pending_backlog_plan_integration_test.go#L87), [backlogShape](../db/gorm/pending_backlog_plan_integration_test.go#L118), [backlogDrain](../db/gorm/pending_backlog_plan_integration_test.go#L139), [TestPendingBacklogBatchPlanComparison](../db/gorm/pending_backlog_plan_integration_test.go#L262).
+Fixture setup uses a transaction-local timeout; measured batches retain runtime limits. A small regression test checks timeout restoration after commit and rollback.
+
+**Functions and methods:** [backlogEnvInt](../db/gorm/pending_backlog_plan_integration_test.go#L60), [backlogMS](../db/gorm/pending_backlog_plan_integration_test.go#L73), [backlogMean](../db/gorm/pending_backlog_plan_integration_test.go#L77), [backlogExplain](../db/gorm/pending_backlog_plan_integration_test.go#L90), [backlogShape](../db/gorm/pending_backlog_plan_integration_test.go#L121), [backlogSetup](../db/gorm/pending_backlog_plan_integration_test.go#L141), [backlogDrain](../db/gorm/pending_backlog_plan_integration_test.go#L155), [TestPendingBacklogBatchPlanComparison](../db/gorm/pending_backlog_plan_integration_test.go#L290), [TestBacklogSetupRestoresStatementTimeout](../db/gorm/pending_backlog_plan_integration_test.go#L337).
 
 ### [db/gorm/pricing_integration_test.go](../db/gorm/pricing_integration_test.go)
 

@@ -3,6 +3,9 @@
 package gorm_test
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"sort"
@@ -133,6 +136,19 @@ func backlogShape(plan string) string {
 	return strings.Join(found, ", ")
 }
 
+// backlogSetup changes only the fixture transaction, including ANALYZE. PostgreSQL
+// restores connection settings on commit or rollback, before measured batches run.
+func backlogSetup(ctx context.Context, db *orm.DB, seed func(*orm.DB) error) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	return db.WithContext(ctx).Transaction(func(tx *orm.DB) error {
+		if err := tx.Exec("SET LOCAL statement_timeout = '2min'").Error; err != nil {
+			return fmt.Errorf("set fixture statement timeout: %w", err)
+		}
+		return seed(tx)
+	})
+}
+
 // backlogDrain seeds a fresh isolated schema with a large PENDING backlog plus
 // historical rows, explains the first batch, then drains the whole backlog with
 // committed batches (as the worker does) while timing every batch.
@@ -152,18 +168,25 @@ func backlogDrain(t *testing.T, name, statement string, rows, batch int) backlog
 	t.Logf("[%s] seeding %d PENDING and %d DELIVERED rows (id expression: %s)", name, rows, rows/4, idExpr)
 
 	history := rows / 4
-	if err := db.Exec(`INSERT INTO orders (id,customer_id,status,currency,total_minor,created_at,pricing_mode)
+	// Large fixture creation is not a worker batch. SET LOCAL gives setup a
+	// bounded budget without weakening the runtime limit for measured queries.
+	if err := backlogSetup(t.Context(), db, func(tx *orm.DB) error {
+		if err := tx.Exec(`INSERT INTO orders (id,customer_id,status,currency,total_minor,created_at,pricing_mode)
         SELECT `+idExpr+`, ?, 'DELIVERED', 'USD', 100, now() - interval '1 day' + g * interval '1 millisecond', 'legacy'
         FROM generate_series(1, ?) AS g`, customer, history).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Exec(`INSERT INTO orders (id,customer_id,status,currency,total_minor,created_at,pricing_mode)
+			return fmt.Errorf("seed delivered orders: %w", err)
+		}
+		if err := tx.Exec(`INSERT INTO orders (id,customer_id,status,currency,total_minor,created_at,pricing_mode)
         SELECT `+idExpr+`, ?, 'PENDING', 'USD', 100, now() - interval '1 hour' + g * interval '1 millisecond', 'legacy'
         FROM generate_series(1, ?) AS g`, customer, rows).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Exec("ANALYZE orders").Error; err != nil {
-		t.Fatal(err)
+			return fmt.Errorf("seed pending orders: %w", err)
+		}
+		if err := tx.Exec("ANALYZE orders").Error; err != nil {
+			return fmt.Errorf("analyze backlog fixture: %w", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("[%s] fixture setup: %v", name, err)
 	}
 
 	cutoff := time.Now().UTC()
@@ -204,9 +227,14 @@ func backlogDrain(t *testing.T, name, statement string, rows, batch int) backlog
 	}
 
 	var pending, processing, delivered int64
-	db.Table("orders").Where("status = 'PENDING'").Count(&pending)
-	db.Table("orders").Where("status = 'PROCESSING'").Count(&processing)
-	db.Table("orders").Where("status = 'DELIVERED'").Count(&delivered)
+	for _, check := range []struct {
+		status string
+		count  *int64
+	}{{"PENDING", &pending}, {"PROCESSING", &processing}, {"DELIVERED", &delivered}} {
+		if err := db.Table("orders").Where("status = ?", check.status).Count(check.count).Error; err != nil {
+			t.Fatalf("[%s] count %s after drain: %v", name, check.status, err)
+		}
+	}
 	if processed != rows || pending != 0 || processing != int64(rows) || delivered != int64(history) {
 		t.Fatalf("[%s] unexpected final state: processed=%d pending=%d processing=%d delivered=%d (rows=%d history=%d)",
 			name, processed, pending, processing, delivered, rows, history)
@@ -256,8 +284,8 @@ func backlogDrain(t *testing.T, name, statement string, rows, batch int) backlog
 //
 // BACKLOG_BATCH (default 500, the application default) sets the batch size.
 // Each variant runs in its own freshly seeded schema and drains the whole
-// backlog with committed batches. The test fails only if a variant processes the
-// wrong rows; plan shapes and timings are reported, not asserted, because they
+// backlog with committed batches. SQL/setup failures and incorrect final states
+// fail the test; plan shapes and timings are reported, not asserted, because they
 // depend on the PostgreSQL version and hardware.
 func TestPendingBacklogBatchPlanComparison(t *testing.T) {
 	rows := backlogEnvInt(t, "BACKLOG_ROWS", 0)
@@ -300,6 +328,65 @@ func TestPendingBacklogBatchPlanComparison(t *testing.T) {
 			r.name, r.firstMS, r.lastMS, growth, r.p50MS, r.p95MS, r.maxMS, r.totalS, r.startPlanMS, r.latePlanMS)
 	}
 	t.Log("first10ms and last10ms are mean batch times for the first and last 10 batches (a smaller sample on tiny runs).")
-	t.Log("growth = last10ms / first10ms. Near 1x means per-batch cost does not depend on the remaining backlog.")
+	t.Log("growth = last10ms / first10ms; this compares sampled timings, not whether batch cost is independent of backlog size.")
 	t.Log("explain0ms and explainEms are EXPLAIN ANALYZE execution times at full backlog and with about 10% left.")
+}
+
+// Use one connection and a deliberately short baseline to detect a leaked setup
+// timeout. This small regression check runs even when the large comparison is off.
+func TestBacklogSetupRestoresStatementTimeout(t *testing.T) {
+	for _, rollback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rollback_%t", rollback), func(t *testing.T) {
+			db := testutil.PostgreSQL(t)
+			_, product := fixtures(t, db)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			pool.SetMaxIdleConns(1)
+			if err := db.Exec("SET statement_timeout = '50ms'").Error; err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("fixture rollback")
+			err = backlogSetup(t.Context(), db, func(tx *orm.DB) error {
+				if err := tx.Exec("SELECT pg_sleep(0.1)").Error; err != nil {
+					return err
+				}
+				if err := tx.Exec("UPDATE products SET name = 'Setup fixture' WHERE id = ?", product.ID).Error; err != nil {
+					return err
+				}
+				if rollback {
+					return injected
+				}
+				return nil
+			})
+			if rollback && !errors.Is(err, injected) || !rollback && err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			var timeout string
+			if err := db.Raw("SHOW statement_timeout").Scan(&timeout).Error; err != nil {
+				t.Fatal(err)
+			}
+			if timeout != "50ms" {
+				t.Fatalf("setup timeout leaked: %s", timeout)
+			}
+			var name string
+			if err := db.Raw("SELECT name FROM products WHERE id = ?", product.ID).Scan(&name).Error; err != nil {
+				t.Fatal(err)
+			}
+			want := "Setup fixture"
+			if rollback {
+				want = product.Name
+			}
+			if name != want {
+				t.Fatalf("transaction outcome: got %q, want %q", name, want)
+			}
+			err = db.Exec("SELECT pg_sleep(0.2)").Error
+			var state interface{ SQLState() string }
+			if !errors.As(err, &state) || state.SQLState() != "57014" {
+				t.Fatalf("baseline timeout not enforced: %v", err)
+			}
+		})
+	}
 }

@@ -217,6 +217,13 @@ BACKLOG_ROWS=200000 go test -mod=readonly -count=1 -tags=integration \
 
 This seeds 200,000 PENDING and 50,000 DELIVERED orders per variant and compares
 the production `PendingBatchSQL` with a test-only primary-key-array rewrite.
+Fixture inserts and `ANALYZE` use a setup-only transaction with a two-minute
+statement timeout and a five-minute overall context budget. The override resets
+on commit or rollback; measured EXPLAIN and drain batches retain the normal
+five-second database statement limit. Go's `-timeout 30m` limits the test process
+and does not override PostgreSQL statement timeouts. A small integration test,
+`TestBacklogSetupRestoresStatementTimeout`, checks restoration on both outcomes.
+
 `BACKLOG_BATCH` defaults to 500. The test reports `EXPLAIN (ANALYZE, BUFFERS)` at
 full backlog and near the end, committed-batch durations and their total. EXPLAIN
 updates are rolled back and excluded from the committed-batch timing totals.
@@ -224,6 +231,10 @@ Correctness assertions check the processed count, batch limit and final status
 counts, including that the delivered-order count remains unchanged.
 
 Plans and timings are observations rather than fixed performance assertions.
+The `growth` column is the last-ten-batch mean divided by the first-ten-batch
+mean. It describes the sampled timing change; even a value near 1 does not prove
+that batch cost is independent of backlog size. Compare plan shape separately
+from elapsed time.
 The variants run sequentially without concurrent API traffic; cache state,
 autovacuum, PostgreSQL version and hardware can affect the comparison. Production
 SQL is unchanged. See the [scaling discussion](architecture.md#what-already-bounds-work)
