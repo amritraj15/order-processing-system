@@ -39,19 +39,21 @@ The [architecture discussion](architecture.md) provides design details.
 
 ## Known limitations and next steps
 
-| Area | Current boundary and next step |
-| --- | --- |
-| Create retries | Supply `Idempotency-Key` for retry-safe items-only creation. Without it, retries can still duplicate. Quote submissions retain their existing replay guarantee. Keys currently remain indefinitely; their database creation timestamp supports the proposed 30-day retention policy described below. |
-| Status history | Current state/timestamps and mutation logs exist, but no durable transition history table. Next: record previous/new status, actor, reason and time in the transition transaction. |
-| Scheduling | Every API replica has its own five-minute ticker. Row locks protect transitions, but there is no single deployment-wide cadence. Next, if required: separate worker lifecycle and one coordinated scheduler. |
-| Commerce workflows | Inventory reservation, payments, refunds and external fulfillment are outside scope. Adding them requires explicit business rules, retry-safe integrations and transactional event publication. |
-| Capacity and operations | Throughput at 10k orders/s is unmeasured. Add load tests, pending-age/throughput/DB-pool metrics and tracing before choosing caches, replicas, queues or partitioning. Auth limits are currently per-process. |
-| Availability | The supplied deployment uses one PostgreSQL instance. Add tested backup/restore and HA/failover before making availability commitments. |
+The implementation covers the assignment's order operations and automatic
+processing. The following boundaries describe optional extensions and production
+work beyond that scope.
+
+| Area | Implemented behavior | Remaining boundary / optional next step |
+| --- | --- | --- |
+| Create retries | Customer-scoped `Idempotency-Key` support for items and quote requests, payload conflict detection, atomic persistence and bounded lock/operation waits. Quote replay also works without a key. | Items-only retries without a key can create duplicates. Keys are retained indefinitely; `created_at` supports future cleanup, but the proposed 30-day retention policy is not enforced. |
+| Status history | Orders store their current status and update time; structured logs describe committed mutations. | There is no durable history of every transition. If required, record previous/new status, actor, reason and time in the same transaction as each change. |
+| Scheduling | Each API instance runs a worker at a configurable interval, defaulting to five minutes. Conditional updates and `SKIP LOCKED` batches coordinate concurrent processing. | Replicas have independent tick schedules. A single deployment-wide cadence would require a dedicated scheduler or leader coordination. |
+| Commerce workflows | Orders validate catalog products and snapshot quantities and prices. | Stock reservation, payments, refunds and external fulfillment are not implemented. Adding them requires separate business rules and reliable integration workflows. |
+| Capacity and operations | Indexed queries, bounded batches, cursor pagination, connection limits, worker-aware readiness, structured logs and per-process auth limits. | Production throughput is unmeasured. Add load tests, metrics and tracing; coordinate auth limits across replicas when needed. Use measurements to guide caching or database scaling. |
+| Availability | Order data is persisted in PostgreSQL; transactions protect atomic writes and readiness checks database health. The supplied deployment uses one database instance. | Automated failover and backup/restore procedures are not provided or tested. Add them before making production availability commitments. |
 
 Repeated cancellation returns 200 with the owned CANCELLED order, without changing
 its timestamp. Cancellation of PROCESSING, SHIPPED or DELIVERED still returns 409.
-Durable status history remains a focused enhancement; inventory/payment workflows
-expand the brief.
 
 ## Retry-safe order creation and the table decision
 
