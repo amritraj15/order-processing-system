@@ -768,13 +768,21 @@ HTTP and worker share that pool. The partial pending index keeps historical
 non-PENDING orders out of the queue lookup. Batch size bounds the number of rows
 updated, but does not necessarily bound the rows scanned by the update's join.
 
-In the local integration run with 1,201 pending rows, PostgreSQL selected 100 rows
-for the batch but used a bitmap scan over the pending backlog on the
-`UPDATE ... FROM batch` side. Repeated batches can therefore repeatedly scan the
-remaining queue. Before scaling to large backlogs, check `EXPLAIN ANALYZE` on a
-larger fixture and, if needed, restructure the update to use primary-key lookups
-for the selected IDs. The planner may choose a different plan at another scale;
-the small fixture does not establish a production throughput bound.
+In the standard integration fixture (1,201 pending rows) PostgreSQL chose a
+bitmap scan over the pending set for the `UPDATE ... FROM batch` side. An opt-in
+test (`BACKLOG_ROWS=200000`, see [TESTING.md](TESTING.md#optional-large-backlog-plan-comparison))
+seeds 200,000 pending and 50,000 delivered rows and drains them in 400 committed
+batches of 500. In the author's PostgreSQL 18.4 run (one local connection, warm
+cache, no concurrent traffic), the planner used primary-key lookups for the
+selected rows at both full backlog and with 10% remaining. Batch execution under
+`EXPLAIN ANALYZE` took 8.80 ms and 8.26 ms respectively; committed batches had a
+median of 5.75 ms and p95 of 9.83 ms, with a total drain time of 2.64 s. Per-batch
+time did not grow over the measured drain. The queue-index scan read more buffers
+near the end (13 initially, 910 with 10% remaining), consistent with processed
+rows leaving dead index entries pending cleanup. Autovacuum settings for `orders`
+matter under sustained churn. A primary-key-array rewrite was about 10% faster
+and was not adopted. These are single-machine plan and timing observations,
+not production throughput claims.
 
 Successful authenticated requests also perform a denylist lookup and a current
 user lookup. Measure that cost alongside order queries. Caching either can delay

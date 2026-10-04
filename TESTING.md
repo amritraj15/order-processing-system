@@ -202,6 +202,33 @@ migration guards and EXPLAIN index assertions. `-v` retains
 the query plans. `make integration` is also available, but the explicit command
 above forces a fresh run and prints verbose local diagnostics.
 
+### Optional large-backlog plan comparison
+
+The [backlog comparison test](db/gorm/pending_backlog_plan_integration_test.go)
+is opt-in: it skips before connecting to PostgreSQL when `BACKLOG_ROWS` is unset
+or zero, so normal integration runs do not seed a large backlog. Set
+`TEST_DATABASE_URL` to a dedicated local test database as described above. Each
+variant uses its own isolated schema, which the test removes afterward.
+
+```bash
+BACKLOG_ROWS=200000 go test -mod=readonly -count=1 -tags=integration \
+  -run TestPendingBacklogBatchPlanComparison -v -timeout 30m ./db/gorm
+```
+
+This seeds 200,000 PENDING and 50,000 DELIVERED orders per variant and compares
+the production `PendingBatchSQL` with a test-only primary-key-array rewrite.
+`BACKLOG_BATCH` defaults to 500. The test reports `EXPLAIN (ANALYZE, BUFFERS)` at
+full backlog and near the end, committed-batch durations and their total. EXPLAIN
+updates are rolled back and excluded from the committed-batch timing totals.
+Correctness assertions check the processed count, batch limit and final status
+counts, including that the delivered-order count remains unchanged.
+
+Plans and timings are observations rather than fixed performance assertions.
+The variants run sequentially without concurrent API traffic; cache state,
+autovacuum, PostgreSQL version and hardware can affect the comparison. Production
+SQL is unchanged. See the [scaling discussion](architecture.md#what-already-bounds-work)
+for the local result and its limits.
+
 ### B4. Start the native API and exercise the real worker
 
 The smoke test creates its own customers/products/orders. Provision the admin
