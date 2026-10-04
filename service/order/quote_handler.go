@@ -9,10 +9,13 @@ import (
 	"order_management/service/uow"
 )
 
-type CreateFromQuoteCommand struct{ CustomerID, QuoteID uuid.UUID }
+type CreateFromQuoteCommand struct {
+	CustomerID, QuoteID uuid.UUID
+	IdempotencyKey      string
+}
 
 func (s *Service) HandleCreateFromQuote(ctx context.Context, cmd CreateFromQuoteCommand) (*domain.Order, bool, error) {
-	return s.HandlePlace(ctx, PlaceCommand{CustomerID: cmd.CustomerID, QuoteID: &cmd.QuoteID})
+	return s.HandlePlace(ctx, PlaceCommand{CustomerID: cmd.CustomerID, QuoteID: &cmd.QuoteID, IdempotencyKey: cmd.IdempotencyKey})
 }
 
 func createFromQuote(ctx context.Context, repos uow.Repositories, customer, quoteID uuid.UUID) (*domain.Order, bool, error) {

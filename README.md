@@ -10,7 +10,7 @@ All endpoints below use the `/api/v1` prefix and a Bearer token.
 
 | Assignment requirement | Endpoint / behavior | Access |
 | --- | --- | --- |
-| Create an order with multiple items | `POST /orders` with `items`; returns 201 and PENDING. | Customer |
+| Create an order with multiple items | `POST /orders` with `items` and `Idempotency-Key`; returns 201 and PENDING. | Customer |
 | Retrieve order details | `GET /orders/{id}` | Owning customer or admin |
 | Update order status | `PATCH /orders/{id}/status`; PENDING → PROCESSING → SHIPPED → DELIVERED. | Admin only |
 | Automatically process PENDING every five minutes | Embedded worker; first run five minutes after process startup, then every five minutes. | Automatic |
@@ -45,7 +45,7 @@ work beyond that scope.
 
 | Area | Implemented behavior | Remaining boundary / optional next step |
 | --- | --- | --- |
-| Create retries | Customer-scoped `Idempotency-Key` support for items and quote requests, payload conflict detection, atomic persistence and bounded lock/operation waits. Quote replay also works without a key. | Items-only retries without a key can create duplicates. Keys are retained indefinitely; `created_at` supports future cleanup, but the proposed 30-day retention policy is not enforced. |
+| Create retries | Customer-scoped `Idempotency-Key` support for items and quote requests, payload conflict detection, atomic persistence and bounded lock/operation waits. A key is required for both request forms. | Changing the key on an items-only retry can create another order. Keys are retained indefinitely; `created_at` supports future cleanup, but the proposed 30-day retention policy is not enforced. |
 | Status history | Orders store their current status and update time; structured logs describe committed mutations. | There is no durable history of every transition. If required, record previous/new status, actor, reason and time in the same transaction as each change. |
 | Scheduling | Each API instance runs a worker at a configurable interval, defaulting to five minutes. Conditional updates and `SKIP LOCKED` batches coordinate concurrent processing. | Replicas have independent tick schedules. A single deployment-wide cadence would require a dedicated scheduler or leader coordination. |
 | Commerce workflows | Orders validate catalog products and snapshot quantities and prices. | Stock reservation, payments, refunds and external fulfillment are not implemented. Adding them requires separate business rules and reliable integration workflows. |
@@ -58,12 +58,18 @@ DELIVERED returns 409.
 
 ## Retry-safe order creation
 
-Send an optional `Idempotency-Key` with an items or quote request. First creation
+Send a required `Idempotency-Key` with every items or quote order request.
+Missing, empty, malformed or multiple values return 422 before order persistence. First creation
 returns 201; the same customer, key and payload return the original order in its
 current state with 200. Reusing the key with a different payload returns 409.
-Items-only retries without a key can create duplicates; quote submissions also
-support replay by quote ID. See the [idempotency design](architecture.md#decision-durable-idempotency-records)
+Persist the key before sending and reuse it with the same payload after a timeout
+or process restart. A new key on an items-only request identifies a new purchase.
+Quote identity additionally prevents duplicate consumption, but the header is still required. See the [idempotency design](architecture.md#decision-durable-idempotency-records)
 for the table choice, key format, transaction handling, timeouts and retention.
+
+This tightens the previous optional-header contract: existing clients must now
+supply a key. Transactional recovery and endpoint-specific replay limits are
+described in [crash recovery](architecture.md#crash-recovery-by-workflow-step).
 
 ## Run with Docker
 
@@ -118,6 +124,7 @@ curl -s http://localhost:8080/api/v1/products \
 
 # Replace the product IDs with catalog IDs. Prices are always read from the DB.
 curl -s http://localhost:8080/api/v1/orders \
+  -H 'Idempotency-Key: checkout-example-1' \
   -H "Authorization: Bearer $CUSTOMER_TOKEN" -H 'Content-Type: application/json' \
   -d '{"items":[{"product_id":"PRODUCT_UUID_1","quantity":2},{"product_id":"PRODUCT_UUID_2","quantity":1}]}'
 

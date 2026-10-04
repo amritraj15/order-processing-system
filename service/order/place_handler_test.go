@@ -74,7 +74,7 @@ func (u *testUnit) Products() product.Repository                                
 func (u *testUnit) Pricing() pricing.Repository                                   { return testPricing{} }
 func (u *testUnit) Now(context.Context) (time.Time, error)                        { return time.Now(), nil }
 
-func TestPlaceReplayConflictOwnershipAndUnkeyed(t *testing.T) {
+func TestPlaceReplayConflictOwnershipAndRequiredKey(t *testing.T) {
 	ctx := context.Background()
 	products := &testProducts{product: product.Product{ID: uuid.New(), Name: "Book", SKU: "BOOK", PriceMinor: 1299}}
 	repo := &testOrders{orders: map[uuid.UUID]*domain.Order{}, records: map[string]domain.IdempotencyRecord{}}
@@ -102,19 +102,17 @@ func TestPlaceReplayConflictOwnershipAndUnkeyed(t *testing.T) {
 		t.Fatalf("key must be scoped to customer: %+v %v", o, err)
 	}
 	cmd.IdempotencyKey = ""
-	a, _, err := s.HandlePlace(ctx, cmd)
-	if err != nil {
-		t.Fatal(err)
+	if _, _, err := s.HandlePlace(ctx, cmd); !errors.Is(err, shared.ErrInvalid) {
+		t.Fatalf("missing key accepted: %v", err)
 	}
-	b, replay, err := s.HandlePlace(ctx, cmd)
-	if err != nil || replay || a.ID == b.ID {
-		t.Fatalf("unkeyed behavior changed: %v", err)
+	if len(repo.orders) != 2 || len(repo.records) != 2 {
+		t.Fatal("missing key changed stored orders or bindings")
 	}
 }
 
 func TestPlaceValidationBeforeTransaction(t *testing.T) {
-	valid := PlaceCommand{CustomerID: uuid.New(), Items: []domain.ItemInput{{ProductID: uuid.New(), Quantity: 1}}}
-	for _, key := range []string{"has space", "with,comma", "é", strings.Repeat("x", 129)} {
+	valid := PlaceCommand{IdempotencyKey: "valid", CustomerID: uuid.New(), Items: []domain.ItemInput{{ProductID: uuid.New(), Quantity: 1}}}
+	for _, key := range []string{"", "has space", "with,comma", "é", strings.Repeat("x", 129)} {
 		cmd := valid
 		cmd.IdempotencyKey = key
 		if _, _, err := (&Service{}).HandlePlace(context.Background(), cmd); !errors.Is(err, shared.ErrInvalid) {
@@ -130,6 +128,15 @@ func TestPlaceValidationBeforeTransaction(t *testing.T) {
 		t.Fatal("explicit empty header should be invalid")
 	}
 	quoteID := uuid.New()
+	for _, cmd := range []PlaceCommand{
+		{CustomerID: valid.CustomerID, Items: valid.Items},
+		{CustomerID: valid.CustomerID, QuoteID: &quoteID},
+	} {
+		// A nil UOW would panic if rejection did not happen before any transaction.
+		if _, _, err := (&Service{}).HandlePlace(context.Background(), cmd); !errors.Is(err, shared.ErrInvalid) {
+			t.Fatalf("missing key accepted: %v", err)
+		}
+	}
 	valid.QuoteID = &quoteID
 	if _, _, err := (&Service{}).HandlePlace(context.Background(), valid); !errors.Is(err, shared.ErrInvalid) {
 		t.Fatal("quote and items accepted together")
@@ -137,7 +144,7 @@ func TestPlaceValidationBeforeTransaction(t *testing.T) {
 }
 
 func TestRequestFingerprintContract(t *testing.T) {
-	cmd := PlaceCommand{CustomerID: uuid.New(), Items: []domain.ItemInput{{ProductID: uuid.MustParse("11111111-1111-4111-8111-111111111111"), Quantity: 2}}}
+	cmd := PlaceCommand{IdempotencyKey: "original-key", CustomerID: uuid.New(), Items: []domain.ItemInput{{ProductID: uuid.MustParse("11111111-1111-4111-8111-111111111111"), Quantity: 2}}}
 	hash, err := requestHash(cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -152,6 +159,22 @@ func TestRequestFingerprintContract(t *testing.T) {
 	other, _ := requestHash(cmd)
 	if other != hash {
 		t.Fatal("request hash must exclude key and owner (owner is in unique scope)")
+	}
+}
+
+func TestCreateEntryPointsRequireKey(t *testing.T) {
+	// Both convenience entry points must preserve the mandatory-key contract.
+	// No UOW is supplied: reaching persistence would panic and fail this test.
+	s := &Service{}
+	if _, err := s.HandleCreate(context.Background(), CreateCommand{
+		CustomerID: uuid.New(), Items: []domain.ItemInput{{ProductID: uuid.New(), Quantity: 1}},
+	}); !errors.Is(err, shared.ErrInvalid) {
+		t.Fatalf("items entry point accepted a missing key: %v", err)
+	}
+	if _, _, err := s.HandleCreateFromQuote(context.Background(), CreateFromQuoteCommand{
+		CustomerID: uuid.New(), QuoteID: uuid.New(),
+	}); !errors.Is(err, shared.ErrInvalid) {
+		t.Fatalf("quote entry point accepted a missing key: %v", err)
 	}
 }
 

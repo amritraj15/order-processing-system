@@ -138,7 +138,8 @@ Run this whole block promptly, before explaining the output. It creates an order
 for cancellation and a separate order for the worker demonstration.
 
 ```bash
-api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART"
+api 422 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART"
+api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART" 'demo-request-1'
 CANCEL_ID="$(jq -er .id "$DEMO_BODY")"
 jq -e '.status == "PENDING" and .currency == "USD" and .total_minor == 3495 and (.items | length) == 2' "$DEMO_BODY"
 api 200 POST "/api/v1/orders/$CANCEL_ID/cancel" "$CUSTOMER_TOKEN"
@@ -176,15 +177,15 @@ api 401 GET /api/v1/orders
 api 403 PATCH "/api/v1/orders/$ORDER_ID/status" "$CUSTOMER_TOKEN" '{"status":"PROCESSING"}'
 api 403 POST /api/v1/products "$CUSTOMER_TOKEN" \
   '{"sku":"FORBIDDEN","name":"Forbidden","price_minor":1}'
-api 422 POST /api/v1/orders "$CUSTOMER_TOKEN" '{"items":[]}'
+api 422 POST /api/v1/orders "$CUSTOMER_TOKEN" '{"items":[]}' 'demo-request-2'
 api 422 POST /api/v1/orders "$CUSTOMER_TOKEN" \
-  "$(jq -c '.items[0].quantity = 0' <<< "$CART")"
+  "$(jq -c '.items[0].quantity = 0' <<< "$CART")" 'demo-request-3'
 api 422 POST /api/v1/orders "$CUSTOMER_TOKEN" \
-  "$(jq -c '.items[1] = .items[0]' <<< "$CART")"
+  "$(jq -c '.items[1] = .items[0]' <<< "$CART")" 'demo-request-4'
 api 422 POST /api/v1/orders "$CUSTOMER_TOKEN" \
-  "$(jq -nc --arg id "$UNKNOWN_ID" '{items:[{product_id:$id,quantity:1}]}')"
+  "$(jq -nc --arg id "$UNKNOWN_ID" '{items:[{product_id:$id,quantity:1}]}')" 'demo-request-5'
 api 400 POST /api/v1/orders "$CUSTOMER_TOKEN" \
-  "$(jq -c '.items[0].unit_price_minor = 1' <<< "$CART")"
+  "$(jq -c '.items[0].unit_price_minor = 1' <<< "$CART")" 'demo-request-6'
 ```
 
 Explain the difference between 401 (no authentication), 403 (wrong role), 404
@@ -242,7 +243,7 @@ wait_processed() {
 wait_processed "$ORDER_ID"
 
 # Immediately create the next tick's order, before presenting the lifecycle.
-api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART"
+api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART" 'demo-request-7'
 SECOND_ID="$(jq -er .id "$DEMO_BODY")"
 jq -e '.status == "PENDING"' "$DEMO_BODY"
 
@@ -280,12 +281,12 @@ api 201 POST /api/v1/order-quotes "$CUSTOMER_TOKEN" \
 QUOTE_ID="$(jq -er .id "$DEMO_BODY")"
 jq -e '.region == "IN" and .base_currency == "USD" and .currency == "INR" and .source_total_minor == 3495 and .total_minor == 6990 and .rate_source == "demo-fixture"' "$DEMO_BODY"
 QUOTE_BODY="$(jq -nc --arg id "$QUOTE_ID" '{quote_id:$id}')"
-api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$QUOTE_BODY"
+api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$QUOTE_BODY" 'demo-request-8'
 QUOTED_ORDER_ID="$(jq -er .id "$DEMO_BODY")"
 jq -e '.currency == "INR" and .total_minor == 6990' "$DEMO_BODY"
-api 200 POST /api/v1/orders "$CUSTOMER_TOKEN" "$QUOTE_BODY"
+api 200 POST /api/v1/orders "$CUSTOMER_TOKEN" "$QUOTE_BODY" 'demo-request-9'
 jq -e --arg id "$QUOTED_ORDER_ID" '.id == $id and .total_minor == 6990' "$DEMO_BODY"
-api 404 POST /api/v1/orders "$OTHER_TOKEN" "$QUOTE_BODY"
+api 404 POST /api/v1/orders "$OTHER_TOKEN" "$QUOTE_BODY" 'demo-request-10'
 api 409 POST /api/v1/order-quotes "$CUSTOMER_TOKEN" \
   "$(jq -c '. + {region:"DE"}' <<< "$CART")"
 api 422 POST /api/v1/order-quotes "$CUSTOMER_TOKEN" \
@@ -294,7 +295,7 @@ api 200 GET "/api/v1/orders/$ORDER_ID" "$CUSTOMER_TOKEN"
 jq -e '.currency == "USD" and .total_minor == 3495 and .status == "DELIVERED"' "$DEMO_BODY"
 
 # Give the second customer an order to prove admin visibility across owners.
-api 201 POST /api/v1/orders "$OTHER_TOKEN" "$CART"
+api 201 POST /api/v1/orders "$OTHER_TOKEN" "$CART" 'demo-request-11'
 OTHER_ORDER_ID="$(jq -er .id "$DEMO_BODY")"
 api 200 GET /api/v1/orders "$CUSTOMER_TOKEN"
 jq -e --arg id "$OTHER_ORDER_ID" 'all(.items[]; .id != $id)' "$DEMO_BODY"
@@ -328,7 +329,7 @@ After observing the two worker runs, demonstrate the optional manual processing
 path on a fresh order. It does not replace the automatic processing check.
 
 ```bash
-api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART"
+api 201 POST /api/v1/orders "$CUSTOMER_TOKEN" "$CART" 'demo-request-12'
 MANUAL_ID="$(jq -er .id "$DEMO_BODY")"
 api 200 PATCH "/api/v1/orders/$MANUAL_ID/status" "$ADMIN_TOKEN" '{"status":"PROCESSING"}'
 jq -e '.status == "PROCESSING"' "$DEMO_BODY"

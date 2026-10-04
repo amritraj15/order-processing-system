@@ -67,3 +67,33 @@ func PostgreSQL(t *testing.T) *orm.DB {
 	}
 	return db
 }
+
+// Reconnect opens an independent pool into the same isolated schema. It models
+// separate API/worker database clients without creating or migrating more data.
+func Reconnect(t *testing.T, db *orm.DB) *orm.DB {
+	t.Helper()
+	var schema string
+	if err := db.Raw("SELECT current_schema()").Scan(&schema).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(schema, "test_") {
+		t.Fatal("refusing to reconnect outside an isolated test schema")
+	}
+	u, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := u.Query()
+	query.Set("search_path", schema)
+	u.RawQuery = query.Encode()
+	client, err := database.Open(context.Background(), u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql, err := client.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sql.Close() })
+	return client
+}

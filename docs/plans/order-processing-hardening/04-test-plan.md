@@ -116,14 +116,15 @@ default five-minute worker interval. No execution reports need to be submitted.
 
 | Case | Test / expected result |
 | --- | --- |
-| Lost response, same customer/key/payload | `TestPlaceReplayConflictOwnershipAndUnkeyed`: original ID/prices and current status; HTTP 200. |
+| Lost response, same customer/key/payload | `TestPlaceReplayConflictOwnershipAndRequiredKey`: original ID/prices and current status; HTTP 200. |
+| Missing key, items or quote request | Handler/service reject with 422/invalid input before persistence; HTTP flow verifies zero order/item/key rows. |
 | Same key, different payload | Service and `TestCustomerAndAdminOrderFlow`: 409 `idempotency_key_conflict`. |
 | Same key, another customer | Service/HTTP tests: independent order, no data leak. |
 | Two concurrent payloads sharing a key | `TestConcurrentIdempotencyPayloadConflict`: one creation, one conflict, one durable key. |
 | Eight concurrent retries | `TestIdempotentCreateConcurrentRequests`: one order/key, one creation and seven replays. |
 | Key insertion fails after order/items/quote changes | `TestIdempotencyFailureRollsBackOrderAndQuote`: all writes roll back; same key can retry successfully. |
 | Same quote, multiple keys | Rollback/retry and HTTP tests: every accepted key maps to the original order. |
-| Changed JSON formatting or UUID case | HTTP flow: 200 replay. Invalid/empty/duplicate headers: 422. |
+| Changed JSON formatting or UUID case | HTTP flow: 200 replay. Missing/invalid/empty/duplicate headers: 422. |
 | Cancel already CANCELLED | Repository/HTTP tests: 200; unchanged updated_at; foreign customer 404. |
 | Migration downgrade with keys | Repository test: refuses to erase retry protection. Empty up/down/up includes 000004. |
 

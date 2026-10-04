@@ -31,7 +31,7 @@ and the shared HTTP error handler. The worker path starts from bootstrap.
 
 | Requirement | Main function and method path | Where correctness is enforced |
 | --- | --- | --- |
-| R1 items | `OrderHandler.Create` → `Service.HandlePlace` → `UnitOfWork.Do` → `createItems` → `order.New` → `OrderRepository.Insert` | Domain item/amount validation plus one transaction for order/items and an optional key binding. |
+| R1 items | `OrderHandler.Create` → `Service.HandlePlace` → `UnitOfWork.Do` → `createItems` → `order.New` → `OrderRepository.Insert` | Domain item/amount validation plus one transaction for order/items and a required key binding. |
 | R1 quote alternative | `OrderHandler.Create` → `HandlePlace` → `UnitOfWork.Do` → `createFromQuote` → `FindByQuote` / `GetForUpdate` → `Insert` + `MarkConsumed` | Owned quote lock, expiry check after waiting, unique quote identity and atomic writes. |
 | R2 | `OrderHandler.Get` → `Service.HandleGet` → `OrderRepository.Get` | Customer-scoped lookup; foreign and missing orders return 404. |
 | R3a | `OrderHandler.Status` → `Service.HandleStatus` → `order.PreviousStatus` → `OrderRepository.Transition` | Admin role check and SQL `WHERE id = ? AND status = ?`; zero-match invalid state returns 409. |
@@ -134,9 +134,9 @@ Application entry point. `main` installs JSON logging and signal cancellation; `
 
 **Mapping:** R1, R2, R3a, R4, R5; retry extension.
 
-`Create` binds items or quote ID and the optional idempotency key; `Get`, `List`, `Status` and `Cancel` invoke their service use cases. `parseItemInputs`, `parseID` and `parsePagination` validate inputs; `customerScope` restricts customer reads; `orderView` builds response DTOs. Creation returns 201 and replay 200.
+`Create` binds items or quote ID and the required idempotency key; `Get`, `List`, `Status` and `Cancel` invoke their service use cases. `parseItemInputs`, `parseID` and `parsePagination` validate inputs; `customerScope` restricts customer reads; `orderView` builds response DTOs. Creation returns 201 and replay 200.
 
-**Functions and methods:** [parseItemInputs](../api/rest/v1/order_handler.go#L24), [orderView](../api/rest/v1/order_handler.go#L65), [parseID](../api/rest/v1/order_handler.go#L78), [parsePagination](../api/rest/v1/order_handler.go#L85), [customerScope](../api/rest/v1/order_handler.go#L103), [OrderHandler.Create](../api/rest/v1/order_handler.go#L111), [OrderHandler.Get](../api/rest/v1/order_handler.go#L156), [OrderHandler.List](../api/rest/v1/order_handler.go#L167), [OrderHandler.Status](../api/rest/v1/order_handler.go#L186), [OrderHandler.Cancel](../api/rest/v1/order_handler.go#L202).
+**Functions and methods:** [parseItemInputs](../api/rest/v1/order_handler.go#L24), [orderView](../api/rest/v1/order_handler.go#L65), [parseID](../api/rest/v1/order_handler.go#L78), [parsePagination](../api/rest/v1/order_handler.go#L85), [customerScope](../api/rest/v1/order_handler.go#L103), [OrderHandler.Create](../api/rest/v1/order_handler.go#L111), [OrderHandler.Get](../api/rest/v1/order_handler.go#L155), [OrderHandler.List](../api/rest/v1/order_handler.go#L166), [OrderHandler.Status](../api/rest/v1/order_handler.go#L185), [OrderHandler.Cancel](../api/rest/v1/order_handler.go#L201).
 
 ### [api/rest/v1/product_handler.go](../api/rest/v1/product_handler.go)
 
@@ -314,7 +314,7 @@ Defines CreateCommand, StatusCommand and CancelCommand input DTOs. Contains no e
 
 `HandleCreateFromQuote` delegates to HandlePlace. `createFromQuote` first looks for an existing owned order, then locks the quote, handles consumed replay, checks expiry after the lock and inserts an order plus consumption marker within the caller transaction.
 
-**Functions and methods:** [Service.HandleCreateFromQuote](../service/order/quote_handler.go#L14), [createFromQuote](../service/order/quote_handler.go#L18).
+**Functions and methods:** [Service.HandleCreateFromQuote](../service/order/quote_handler.go#L17), [createFromQuote](../service/order/quote_handler.go#L21).
 
 ### [service/product/service.go](../service/product/service.go)
 
@@ -460,9 +460,9 @@ Files ending in `_test.go` are compiled by `go test` and excluded from the appli
 
 **Mapping:** All; integration test infrastructure.
 
-`PostgreSQL` requires TEST_DATABASE_URL, creates an isolated schema, applies migrations, initializes USD catalog settings and registers cleanup. It does not create or destroy the caller database. Compiled only with the integration tag.
+`PostgreSQL` requires TEST_DATABASE_URL, creates an isolated schema, applies migrations, initializes USD catalog settings and registers cleanup. It does not create or destroy the caller database. `Reconnect` opens an independent connection pool to the same isolated schema for replica/recovery tests. Compiled only with the integration tag.
 
-**Functions and methods:** [PostgreSQL](../internal/testutil/postgres.go#L21).
+**Functions and methods:** [PostgreSQL](../internal/testutil/postgres.go#L21), [Reconnect](../internal/testutil/postgres.go#L73).
 
 ### [api/rest/middleware/rate_limit_test.go](../api/rest/middleware/rate_limit_test.go)
 
@@ -502,7 +502,7 @@ Checks strict JSON binding, field validation and safe error envelopes, retryable
 
 Checks malformed/missing/nil UUID rejection with normal and decoding-only binders, plus invalid idempotency headers before service work.
 
-**Functions and methods:** [decodingOnlyBinder.Bind](../api/rest/v1/order_handler_test.go#L23), [TestCreateRejectsInvalidUUIDs](../api/rest/v1/order_handler_test.go#L27), [TestCreateRejectsInvalidIdempotencyHeaders](../api/rest/v1/order_handler_test.go#L71).
+**Functions and methods:** [decodingOnlyBinder.Bind](../api/rest/v1/order_handler_test.go#L23), [TestCreateRejectsInvalidUUIDs](../api/rest/v1/order_handler_test.go#L27), [TestCreateRejectsInvalidIdempotencyHeaders](../api/rest/v1/order_handler_test.go#L72).
 
 ### [configs/config_test.go](../configs/config_test.go)
 
@@ -516,9 +516,9 @@ Checks configuration defaults and invalid currency, token TTL, interval, batch s
 
 **Mapping:** R1; retry extension.
 
-Checks concurrent identical/conflicting keyed requests, lock/statement timeout recovery and rollback of order/items/quote writes when key persistence fails. countRows supports database assertions.
+Checks identical requests across independent service/database clients, conflicting keyed requests, lock/statement timeout recovery and rollback of order/items/quote writes when key persistence fails. countRows supports database assertions.
 
-**Functions and methods:** [countRows](../db/gorm/idempotency_integration_test.go#L24), [TestIdempotentCreateConcurrentRequests](../db/gorm/idempotency_integration_test.go#L32), [TestIdempotencyLockTimeoutAndRecovery](../db/gorm/idempotency_integration_test.go#L122), [TestIdempotencyStatementTimeoutRollsBack](../db/gorm/idempotency_integration_test.go#L158), [TestIdempotencyFailureRollsBackOrderAndQuote](../db/gorm/idempotency_integration_test.go#L184), [TestConcurrentIdempotencyPayloadConflict](../db/gorm/idempotency_integration_test.go#L241).
+**Functions and methods:** [countRows](../db/gorm/idempotency_integration_test.go#L24), [TestIdempotentCreateConcurrentRequests](../db/gorm/idempotency_integration_test.go#L32), [TestIdempotencyLockTimeoutAndRecovery](../db/gorm/idempotency_integration_test.go#L127), [TestIdempotencyStatementTimeoutRollsBack](../db/gorm/idempotency_integration_test.go#L163), [TestIdempotencyFailureRollsBackOrderAndQuote](../db/gorm/idempotency_integration_test.go#L189), [TestConcurrentIdempotencyPayloadConflict](../db/gorm/idempotency_integration_test.go#L246).
 
 ### [db/gorm/idempotency_migrations_integration_test.go](../db/gorm/idempotency_migrations_integration_test.go)
 
@@ -542,7 +542,7 @@ Tests pricing migration round trips and legacy preservation, plus expiry-index u
 
 Checks atomic snapshots/status, database-clock transitions, concurrent bounded batches and cutoff, query plans, cancellation/processing races, skipped locks and failed-batch rollback. fixtures creates isolated customer/product data.
 
-**Functions and methods:** [fixtures](../db/gorm/order_repository_integration_test.go#L26), [TestOrderTransactionSnapshotsAndStatus](../db/gorm/order_repository_integration_test.go#L40), [TestOrderTransitionUsesDatabaseTime](../db/gorm/order_repository_integration_test.go#L97), [TestPendingBatchesConcurrencyCutoffAndQueryPlan](../db/gorm/order_repository_integration_test.go#L126), [TestCancellationAndProcessingRace](../db/gorm/order_repository_integration_test.go#L219), [TestPendingSkipsLockedRowsAndRollsBackFailedBatch](../db/gorm/order_repository_integration_test.go#L260).
+**Functions and methods:** [fixtures](../db/gorm/order_repository_integration_test.go#L26), [TestOrderTransactionSnapshotsAndStatus](../db/gorm/order_repository_integration_test.go#L40), [TestOrderTransitionUsesDatabaseTime](../db/gorm/order_repository_integration_test.go#L97), [TestPendingBatchesConcurrencyCutoffAndQueryPlan](../db/gorm/order_repository_integration_test.go#L126), [TestCancellationAndProcessingRace](../db/gorm/order_repository_integration_test.go#L219), [TestPendingSkipsLockedRowsAndRollsBackFailedBatch](../db/gorm/order_repository_integration_test.go#L261).
 
 ### [db/gorm/pending_backlog_plan_integration_test.go](../db/gorm/pending_backlog_plan_integration_test.go)
 
@@ -558,7 +558,7 @@ Compares production batch SQL with a test-only primary-key-array variant. Helper
 
 Checks concurrent quote consumption, persisted snapshots/replay, serialized initialization/import, explicit legacy adoption, expiry after waiting for a lock and consumption rollback.
 
-**Functions and methods:** [TestQuoteConcurrencyAndPersistentSnapshots](../db/gorm/pricing_integration_test.go#L21), [TestInitializationAndRateImportsAreSerialized](../db/gorm/pricing_integration_test.go#L97), [TestLegacyCatalogRequiresExplicitAdoption](../db/gorm/pricing_integration_test.go#L146), [TestQuoteExpiryCheckedAfterLockWait](../db/gorm/pricing_integration_test.go#L161), [TestQuoteConsumptionFailureRollsBackOrder](../db/gorm/pricing_integration_test.go#L207).
+**Functions and methods:** [TestQuoteConcurrencyAndPersistentSnapshots](../db/gorm/pricing_integration_test.go#L21), [TestInitializationAndRateImportsAreSerialized](../db/gorm/pricing_integration_test.go#L99), [TestLegacyCatalogRequiresExplicitAdoption](../db/gorm/pricing_integration_test.go#L148), [TestQuoteExpiryCheckedAfterLockWait](../db/gorm/pricing_integration_test.go#L163), [TestQuoteConsumptionFailureRollsBackOrder](../db/gorm/pricing_integration_test.go#L209).
 
 ### [domain/money/money_test.go](../domain/money/money_test.go)
 
@@ -604,9 +604,9 @@ Uses fake users and denylist to exercise registration, login, session, logout, i
 
 **Mapping:** R1; retry extension.
 
-Uses fake transaction/repository implementations to check replay, conflict, ownership, unkeyed creation, validation before transactions, fingerprint stability and keyed deadlines.
+Uses fake transaction/repository implementations to check replay, conflict, ownership, missing-key rejection, validation before transactions, fingerprint stability and keyed deadlines.
 
-**Functions and methods:** [testOrders.Insert](../service/order/place_handler_test.go#L25), [testOrders.Get](../service/order/place_handler_test.go#L29), [testOrders.LockAndFindIdempotency](../service/order/place_handler_test.go#L36), [testOrders.InsertIdempotency](../service/order/place_handler_test.go#L43), [testProducts.GetMany](../service/order/place_handler_test.go#L54), [testPricing.Settings](../service/order/place_handler_test.go#L61), [testUnit.Do](../service/order/place_handler_test.go#L71), [testUnit.Orders](../service/order/place_handler_test.go#L72), [testUnit.Products](../service/order/place_handler_test.go#L73), [testUnit.Pricing](../service/order/place_handler_test.go#L74), [testUnit.Now](../service/order/place_handler_test.go#L75), [TestPlaceReplayConflictOwnershipAndUnkeyed](../service/order/place_handler_test.go#L77), [TestPlaceValidationBeforeTransaction](../service/order/place_handler_test.go#L115), [TestRequestFingerprintContract](../service/order/place_handler_test.go#L139), [unitFunc.Do](../service/order/place_handler_test.go#L160), [TestKeyedCreateDeadline](../service/order/place_handler_test.go#L164).
+**Functions and methods:** [testOrders.Insert](../service/order/place_handler_test.go#L25), [testOrders.Get](../service/order/place_handler_test.go#L29), [testOrders.LockAndFindIdempotency](../service/order/place_handler_test.go#L36), [testOrders.InsertIdempotency](../service/order/place_handler_test.go#L43), [testProducts.GetMany](../service/order/place_handler_test.go#L54), [testPricing.Settings](../service/order/place_handler_test.go#L61), [testUnit.Do](../service/order/place_handler_test.go#L71), [testUnit.Orders](../service/order/place_handler_test.go#L72), [testUnit.Products](../service/order/place_handler_test.go#L73), [testUnit.Pricing](../service/order/place_handler_test.go#L74), [testUnit.Now](../service/order/place_handler_test.go#L75), [TestPlaceReplayConflictOwnershipAndRequiredKey](../service/order/place_handler_test.go#L77), [TestPlaceValidationBeforeTransaction](../service/order/place_handler_test.go#L113), [TestRequestFingerprintContract](../service/order/place_handler_test.go#L146), [TestCreateEntryPointsRequireKey](../service/order/place_handler_test.go#L165), [unitFunc.Do](../service/order/place_handler_test.go#L183), [TestKeyedCreateDeadline](../service/order/place_handler_test.go#L187).
 
 ### [service/processing/status_test.go](../service/processing/status_test.go)
 
@@ -630,7 +630,7 @@ Fake processors exercise full/short/empty batches, failures, cancellation, waiti
 
 Uses in-memory fakes to check quote snapshots, expiry, ownership and replay; PostgreSQL locking is covered separately.
 
-**Functions and methods:** [pricingFake.Settings](../service/quote/service_test.go#L24), [pricingFake.ActiveRate](../service/quote/service_test.go#L27), [productsFake.GetMany](../service/quote/service_test.go#L39), [quotesFake.Insert](../service/quote/service_test.go#L48), [quotesFake.GetForUpdate](../service/quote/service_test.go#L49), [quotesFake.MarkConsumed](../service/quote/service_test.go#L55), [ordersFake.FindByQuote](../service/quote/service_test.go#L65), [ordersFake.Insert](../service/quote/service_test.go#L71), [ordersFake.Get](../service/quote/service_test.go#L72), [unit.Do](../service/quote/service_test.go#L84), [unit.Now](../service/quote/service_test.go#L85), [unit.Pricing](../service/quote/service_test.go#L86), [unit.Products](../service/quote/service_test.go#L87), [unit.Quotes](../service/quote/service_test.go#L88), [unit.Orders](../service/quote/service_test.go#L89), [TestQuoteSnapshotsExpiryOwnershipAndReplay](../service/quote/service_test.go#L90).
+**Functions and methods:** [pricingFake.Settings](../service/quote/service_test.go#L24), [pricingFake.ActiveRate](../service/quote/service_test.go#L27), [productsFake.GetMany](../service/quote/service_test.go#L39), [quotesFake.Insert](../service/quote/service_test.go#L48), [quotesFake.GetForUpdate](../service/quote/service_test.go#L49), [quotesFake.MarkConsumed](../service/quote/service_test.go#L55), [ordersFake.LockAndFindIdempotency](../service/quote/service_test.go#L66), [ordersFake.InsertIdempotency](../service/quote/service_test.go#L73), [ordersFake.FindByQuote](../service/quote/service_test.go#L80), [ordersFake.Insert](../service/quote/service_test.go#L86), [ordersFake.Get](../service/quote/service_test.go#L87), [unit.Do](../service/quote/service_test.go#L99), [unit.Now](../service/quote/service_test.go#L100), [unit.Pricing](../service/quote/service_test.go#L101), [unit.Products](../service/quote/service_test.go#L102), [unit.Quotes](../service/quote/service_test.go#L103), [unit.Orders](../service/quote/service_test.go#L104), [TestQuoteSnapshotsExpiryOwnershipAndReplay](../service/quote/service_test.go#L105).
 
 ## Schema migrations
 

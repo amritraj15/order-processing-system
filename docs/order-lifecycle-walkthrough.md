@@ -36,7 +36,7 @@ An operator provisions one admin. Three customers register through
 | Store administrator | ADMIN | admin | Creates products and advances shipment statuses. |
 | Alice | ALICE | customer | Places two direct orders and cancels one. |
 | Bob | BOB | customer | Accepts an INR quote and later lets another quote expire. |
-| Chen | CHEN | customer | Retries an unkeyed purchase and cancels the resulting duplicate. |
+| Chen | CHEN | customer | Has a missing-key request rejected, retries safely, then cancels a second purchase. |
 
 There are now **four `users` rows**. Each stores an identity, password hash, role
 and account metadata. Login issues a JWT without inserting a session row.
@@ -347,10 +347,11 @@ orders: the quote lock coordinates consumption and `orders.quote_id` is unique.
 Both keys have H_Q1 because the request fingerprint covers the quote payload,
 not the header key. There are now **4 bindings but still only 3 orders**.
 
-## 6. Chen retries without a key and gets C1 and C2
+## 6. Chen must supply a key, retries safely, then places a second order
 
-Chen buys PEN × 1 and MUG × 2 using the items-only endpoint, without an
-`Idempotency-Key`.
+Chen buys PEN × 1 and MUG × 2. He initially omits `Idempotency-Key` and receives
+**422**. No order, item or binding is created. He saves key `chen-checkout-1`
+and resubmits, creating C1 with **201**.
 
 | Item | Quantity | Unit price, USD minor units | Line total |
 | --- | ---: | ---: | ---: |
@@ -358,35 +359,40 @@ Chen buys PEN × 1 and MUG × 2 using the items-only endpoint, without an
 | MUG | 2 | 1500 | 3000 |
 | Total | | | **3300 = USD 33.00** |
 
-The first request creates C1 and two items, returning **201**. Suppose the response
-is lost and Chen submits the same request again. That creates C2 and two more
-items, also returning **201**. Neither request creates an idempotency binding.
+If the response is lost, Chen resends the same key and payload. That returns
+C1 with **200** and creates no rows. The saved key must be reused even if Chen's
+client process restarts. Generating a new key on every attempt defeats this
+protection for items-only requests.
 
-The service cannot distinguish an intended second purchase from this retry.
-No quote identity is present either. This is the documented unkeyed-create gap.
-
-Chen notices both orders in `GET /orders` and cancels C2 before processing.
-C2 becomes CANCELLED with **200**; C1 remains PENDING. Both orders retain their
-two item rows. If the worker had already processed C2, cancellation would return
-409 and this implementation has no refund or fulfillment-reversal workflow.
+Chen subsequently decides to place another identical purchase using a new key,
+`chen-checkout-2`. This creates C2 and two items with **201**. He changes his mind
+and cancels C2 before processing. C2 becomes CANCELLED with **200**; C1 remains
+PENDING. If the worker had already processed C2, cancellation would return 409.
+This implementation has no refund or fulfillment-reversal workflow.
 
 ### Chen's requests: before and after
 
 | Operation and row key | Before | After |
 | --- | --- | --- |
-| First create: `orders(C1)` | Absent | `customer_id=CHEN, status=PENDING, currency=USD, total_minor=3300, pricing_mode=base, quote_id=NULL, created_at=t_C1, updated_at=t_C1` |
-| First create: `order_items(C1,0)` | Absent | PEN, quantity 1, unit 300, line 300. |
-| First create: `order_items(C1,1)` | Absent | MUG, quantity 2, unit 1500, line 3000. |
-| Unkeyed retry: `orders(C2)` | Absent | `customer_id=CHEN, status=PENDING, currency=USD, total_minor=3300, pricing_mode=base, quote_id=NULL, created_at=t_C2, updated_at=t_C2` |
-| Unkeyed retry: `order_items(C2,0)` | Absent | PEN, quantity 1, unit 300, line 300. |
-| Unkeyed retry: `order_items(C2,1)` | Absent | MUG, quantity 2, unit 1500, line 3000. |
-| Both creates: Chen's `order_idempotency` rows | None. | None. |
+| Missing-key request: Chen's orders/items/bindings | None. | None; 422. Existing customers' rows are unchanged. |
+| First keyed create: `orders(C1)` | Absent | `customer_id=CHEN, status=PENDING, currency=USD, total_minor=3300, pricing_mode=base, quote_id=NULL, created_at=t_C1, updated_at=t_C1` |
+| First keyed create: `order_items(C1,0)` | Absent | PEN, quantity 1, unit 300, line 300. |
+| First keyed create: `order_items(C1,1)` | Absent | MUG, quantity 2, unit 1500, line 3000. |
+| First keyed create: `order_idempotency(CHEN,chen-checkout-1)` | Absent | `request_hash=H_C, order_id=C1, created_at=t_key_C1` |
+| Same-key retry → 200 | C1 PENDING, two items and H_C binding exist. | Same rows and timestamps; no C2 yet. |
+| Second purchase: `orders(C2)` | Absent | `customer_id=CHEN, status=PENDING, currency=USD, total_minor=3300, pricing_mode=base, quote_id=NULL, created_at=t_C2, updated_at=t_C2` |
+| Second purchase: `order_items(C2,0)` | Absent | PEN, quantity 1, unit 300, line 300. |
+| Second purchase: `order_items(C2,1)` | Absent | MUG, quantity 2, unit 1500, line 3000. |
+| Second purchase: `order_idempotency(CHEN,chen-checkout-2)` | Absent | `request_hash=H_C, order_id=C2, created_at=t_key_C2` |
 | Cancel C2: `orders(C2)` | `status=PENDING, updated_at=t_C2` | `status=CANCELLED, updated_at=t_cancel_C2` |
-| Cancel C2: `order_items(C2,0)` and `(C2,1)` | PEN line 300; MUG line 3000. | Same two rows. |
+| Cancel C2: its items and binding | PEN line 300; MUG line 3000; H_C → C2. | Same rows. |
 
-The first request takes counts to 4 orders/8 items; its retry takes them to
-**5 orders/10 items**. Cancellation changes no counts. All four Chen item rows
-include catalog SKU/name snapshots and source amounts equal to final USD amounts.
+The first accepted request takes counts to 4 orders/8 items/5 bindings; its
+same-key retry changes nothing. The second purchase takes counts to **5 orders,
+10 items and 6 bindings**. Cancellation changes no counts. All four Chen item
+rows include catalog SKU/name snapshots and source amounts equal to final USD
+amounts. Both purchases have H_C because their payloads match; their different
+keys deliberately identify separate purchases.
 
 ## 7. Customers retrieve and list their orders
 
@@ -419,7 +425,7 @@ the order table stays identical:
 | C1 | CHEN | PENDING / USD 3300 | PENDING / USD 3300 |
 | C2 | CHEN | CANCELLED / USD 3300 | CANCELLED / USD 3300 |
 
-The ten item rows, four bindings, one quote and two quote items also stay
+The ten item rows, six bindings, one quote and two quote items also stay
 identical, including their timestamps. Filtering changes the returned rows, not
 what is stored. Authentication reads leave users and revocation data unchanged.
 
@@ -529,7 +535,7 @@ HTTP **200**, without another order or status transition.
 | Deliver C1 | `status=SHIPPED, updated_at=t_ship_C1` | `status=DELIVERED, updated_at=t_deliver_C1` |
 
 A2 and C2 stay CANCELLED with their cancellation timestamps. All ten item rows,
-four bindings, Q1 and its two quote items remain unchanged. Creation times and
+six bindings, Q1 and its two quote items remain unchanged. Creation times and
 monetary values do not change during any of these six successful requests.
 
 These additional checks illustrate rejected or replayed requests at the stated
@@ -585,7 +591,7 @@ save the corresponding SKU/name. Quotes now number **2**, with **4 quote items**
 | Expired checkout: hypothetical `orders(B2)` and its items | Absent. | Absent. |
 | Expired checkout: `order_idempotency(BOB,expired-checkout)` | Absent. | Absent. |
 
-Orders remain **5**, order items **10**, and bindings **4** after the failed
+Orders remain **5**, order items **10**, and bindings **6** after the failed
 transaction. No lasting row is inserted merely by acquiring a transaction lock.
 
 ## 11. Chen logs out
@@ -639,7 +645,7 @@ saved product SKU/name.
 | C2 | 0 | PEN | 1 | 300 | 300 | 300 | 300 |
 | C2 | 1 | MUG | 2 | 1500 | 3000 | 1500 | 3000 |
 
-The idempotency table contains four rows:
+The idempotency table contains six rows:
 
 | `customer_id` | `idempotency_key` | `request_hash` | `order_id` | `created_at` |
 | --- | --- | --- | --- | --- |
@@ -647,6 +653,8 @@ The idempotency table contains four rows:
 | ALICE | `checkout-2` | H_A2 | A2 | t_key_A2 |
 | BOB | `checkout-1` | H_Q1 | B1 | t_key_B1 |
 | BOB | `checkout-alt` | H_Q1 | B1 | t_key_B1_alt |
+| CHEN | `chen-checkout-1` | H_C | C1 | t_key_C1 |
+| CHEN | `chen-checkout-2` | H_C | C2 | t_key_C2 |
 
 The retained quote headers and line values are:
 
@@ -670,7 +678,7 @@ The retained quote headers and line values are:
 | `fx_rates` | 1 | RATE1; importing a rate does not consume it. |
 | `orders` | 5 | Three DELIVERED and two CANCELLED orders. |
 | `order_items` | 10 | Two immutable purchase lines per order, including cancelled orders. |
-| `order_idempotency` | 4 | Bindings for A1, A2 and B1; two bindings point to B1. |
+| `order_idempotency` | 6 | Bindings for all five orders; two bindings point to B1. |
 | `order_quotes` | 2 | Q1 consumed by B1; Q2 unconsumed and expired. |
 | `quote_items` | 4 | Two price-offer lines per quote. |
 | `denylisted_tokens` | 1 | Chen's revoked token, until its expiry permits cleanup. |
@@ -686,12 +694,13 @@ pass can delete Q1 and Q2. Their four `quote_items` rows disappear through
 `ON DELETE CASCADE`. B1 retains `quote_id=Q1` and its pricing/item snapshots:
 `orders.quote_id` deliberately has no foreign key to the removable quote.
 
-A later replay of Bob's Q1 purchase can still find B1 through `orders.quote_id`
-and owner, even without an idempotency key. An expired, unconsumed Q2 submission
+A later replay of Bob's Q1 purchase with the original key still returns B1.
+A request with a different valid key can also find B1 through `orders.quote_id`
+and owner, binding that additional key; missing keys always return 422. An expired, unconsumed Q2 submission
 after Q2 has been deleted instead returns 404 because no quote or order exists.
 
 After Chen's token expires, maintenance can delete its denylist row. Expiration
-still makes the JWT unusable. No automatic purge removes the four idempotency
+still makes the JWT unusable. No automatic purge removes the six idempotency
 bindings. The five orders, ten order items, users, products, catalog settings and
 FX rate remain. Quote and token cleanup do not delete purchase history.
 
@@ -709,15 +718,15 @@ token to be eligible, and successful maintenance has removed them.
 | `denylisted_tokens(TOKEN_HASH_CHEN)` | Hash and `expires_at=t_token_expiry`. | Absent. |
 | `orders(B1)` | DELIVERED, INR 3600, `quote_id=Q1`, saved RATE1 provenance. | Same row, including `quote_id=Q1`. |
 | `order_items(B1,0)` and `(B1,1)` | BOOK line 2400; PEN line 1200. | Same purchase rows. |
-| All four `order_idempotency` rows | The four bindings listed above. | Same rows and original creation times. |
+| All six `order_idempotency` rows | The six bindings listed above. | Same rows and original creation times. |
 | Remaining orders/items, users, products, settings and RATE1 | Final values listed above. | Same rows. |
 
 | Request after cleanup, using a valid token | Before | After |
 | --- | --- | --- |
-| Bob submits Q1 without a key → 200 | Q1 absent, B1 present with `quote_id=Q1`. | Same data; returns B1, with no new binding. |
-| Bob submits Q2 without a key → 404 | Q2 absent; no order references Q2. | Same data; no new order or quote. |
+| Bob submits Q1 with original key `checkout-1` → 200 | Q1 absent, B1 present; H_Q1 binding exists. | Same data; returns B1, with no new binding. |
+| Bob submits Q2 with `expired-checkout` → 404 | Q2 absent; no order references Q2. | Same data; no new order or quote. |
 
-Final counts after cleanup are **5 orders, 10 order items, 4 bindings, 0 quotes,
+Final counts after cleanup are **5 orders, 10 order items, 6 bindings, 0 quotes,
 0 quote items and 0 denylist rows**, plus the unchanged setup rows.
 
 ## Requirement coverage in this example

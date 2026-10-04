@@ -57,6 +57,7 @@ func TestCreateRejectsInvalidUUIDs(t *testing.T) {
 				t.Run(test.name, func(t *testing.T) {
 					req := httptest.NewRequest("POST", test.path, strings.NewReader(test.body))
 					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("Idempotency-Key", "uuid-validation")
 					res := httptest.NewRecorder()
 					e.ServeHTTP(res, req)
 					if res.Code != 422 {
@@ -77,16 +78,18 @@ func TestCreateRejectsInvalidIdempotencyHeaders(t *testing.T) {
 		}
 	})
 	e.POST("/orders", (&v1.OrderHandler{}).Create)
-	for _, keys := range [][]string{{""}, {"a b"}, {"a,b"}, {strings.Repeat("a", 129)}, {"one", "two"}} {
-		req := httptest.NewRequest("POST", "/orders", strings.NewReader(`{"items":[{"product_id":"`+uuid.NewString()+`","quantity":1}]}`))
-		req.Header.Set("Content-Type", "application/json")
-		for _, key := range keys {
-			req.Header.Add("Idempotency-Key", key)
-		}
-		res := httptest.NewRecorder()
-		e.ServeHTTP(res, req)
-		if res.Code != 422 {
-			t.Fatalf("invalid header %q should fail before service access: %d %s", keys, res.Code, res.Body)
+	for _, body := range []string{`{"items":[{"product_id":"` + uuid.NewString() + `","quantity":1}]}`, `{"quote_id":"` + uuid.NewString() + `"}`} {
+		for _, keys := range [][]string{nil, {""}, {"a b"}, {"a,b"}, {strings.Repeat("a", 129)}, {"one", "two"}} {
+			req := httptest.NewRequest("POST", "/orders", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			for _, key := range keys {
+				req.Header.Add("Idempotency-Key", key)
+			}
+			res := httptest.NewRecorder()
+			e.ServeHTTP(res, req)
+			if res.Code != 422 {
+				t.Fatalf("invalid header %q should fail before service access: %d %s", keys, res.Code, res.Body)
+			}
 		}
 	}
 }

@@ -7,8 +7,9 @@ import (
 )
 
 type CreateCommand struct {
-	CustomerID uuid.UUID
-	Items      []domain.ItemInput
+	IdempotencyKey string
+	CustomerID     uuid.UUID
+	Items          []domain.ItemInput
 }
 type StatusCommand struct {
 	ID     uuid.UUID

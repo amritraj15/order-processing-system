@@ -356,3 +356,24 @@ acceptance; a successful native run does not certify the Docker deployment.
 | Smoke receives 429 | Respect Retry-After; repeated fixture registration consumes the IP quota. |
 | Smoke receives 409 for INR quote | Verify a currently valid INR fixture rate exists and the catalog base is USD. |
 | Worker smoke times out | Confirm `PROCESSING_INTERVAL=5s`, inspect readiness/API logs, and verify DB access. |
+
+## Required keys, recovery and concurrent clients
+
+Every `POST /api/v1/orders` request requires one valid `Idempotency-Key`, including
+quote consumption. Missing keys return 422 without order writes. Use one saved
+key per intended purchase and reuse it on every retry. README, smoke and live-demo
+examples follow this contract; older clients must be updated.
+
+`make test` checks handler/service rejection before persistence, replay/conflict
+behavior, fingerprint stability and deadlines. With a dedicated PostgreSQL test
+DB, `make integration` additionally covers:
+
+- Missing-key HTTP requests leaving orders, items and key bindings empty.
+- Same-key creates and quote consumption through separate service/connection pools.
+- Four independent batch consumers, plus cancellation racing processing.
+- Failed writes rolling back order/items/quote consumption/key bindings together.
+- Replay through a new service and database pool after a committed response is lost.
+
+These are transaction, reconnect and concurrency checks. They are not exhaustive
+OS-process crash injection, multi-host deployment or PostgreSQL failover tests.
+See [workflow recovery boundaries](architecture.md#crash-recovery-by-workflow-step).

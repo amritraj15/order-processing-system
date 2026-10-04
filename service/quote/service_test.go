@@ -59,9 +59,24 @@ func (q *quotesFake) MarkConsumed(_ context.Context, id, orderID uuid.UUID) erro
 
 type ordersFake struct {
 	order.Repository
-	o *order.Order
+	o       *order.Order
+	records map[string]order.IdempotencyRecord
 }
 
+func (o *ordersFake) LockAndFindIdempotency(_ context.Context, customer uuid.UUID, key string) (*order.IdempotencyRecord, error) {
+	r, ok := o.records[customer.String()+":"+key]
+	if !ok {
+		return nil, shared.ErrNotFound
+	}
+	return &r, nil
+}
+func (o *ordersFake) InsertIdempotency(_ context.Context, r order.IdempotencyRecord) error {
+	if o.records == nil {
+		o.records = make(map[string]order.IdempotencyRecord)
+	}
+	o.records[r.CustomerID.String()+":"+r.Key] = r
+	return nil
+}
 func (o *ordersFake) FindByQuote(_ context.Context, id, customer uuid.UUID) (*order.Order, error) {
 	if o.o == nil || *o.o.QuoteID != id || o.o.CustomerID != customer {
 		return nil, shared.ErrNotFound
@@ -104,23 +119,23 @@ func TestQuoteSnapshotsExpiryOwnershipAndReplay(t *testing.T) {
 	rate.Rate = "3"
 	u.products.p.PriceMinor = 9999
 	orderService := &orders.Service{UOW: u}
-	if _, _, err := orderService.HandleCreateFromQuote(context.Background(), orders.CreateFromQuoteCommand{CustomerID: uuid.New(), QuoteID: q.ID}); !errors.Is(err, shared.ErrNotFound) {
+	if _, _, err := orderService.HandleCreateFromQuote(context.Background(), orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: uuid.New(), QuoteID: q.ID}); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatal("ownership not enforced")
 	}
-	o, replay, err := orderService.HandleCreateFromQuote(context.Background(), orders.CreateFromQuoteCommand{CustomerID: customer, QuoteID: q.ID})
+	o, replay, err := orderService.HandleCreateFromQuote(context.Background(), orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, QuoteID: q.ID})
 	if err != nil || replay || o.TotalMinor != 5196 || o.Pricing.Rate != "2" {
 		t.Fatalf("snapshot changed: %+v %v", o, err)
 	}
 	u.now = q.ExpiresAt.Add(time.Hour)
 	u.q.q = nil
-	repeated, replay, err := orderService.HandleCreateFromQuote(context.Background(), orders.CreateFromQuoteCommand{CustomerID: customer, QuoteID: q.ID})
+	repeated, replay, err := orderService.HandleCreateFromQuote(context.Background(), orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, QuoteID: q.ID})
 	if err != nil || !replay || repeated.ID != o.ID {
 		t.Fatal("replay after cleanup failed")
 	}
 	u.o.o = nil
 	u.q.q = q
 	q.ConsumedOrderID = nil
-	if _, _, err := orderService.HandleCreateFromQuote(context.Background(), orders.CreateFromQuoteCommand{CustomerID: customer, QuoteID: q.ID}); !errors.Is(err, shared.ErrQuoteExpired) {
+	if _, _, err := orderService.HandleCreateFromQuote(context.Background(), orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, QuoteID: q.ID}); !errors.Is(err, shared.ErrQuoteExpired) {
 		t.Fatal("expired quote accepted")
 	}
 	u.p.rate = nil

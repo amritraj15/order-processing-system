@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Service) HandleCreate(ctx context.Context, cmd CreateCommand) (*domain.Order, error) {
-	o, _, err := s.HandlePlace(ctx, PlaceCommand{CustomerID: cmd.CustomerID, Items: cmd.Items})
+	o, _, err := s.HandlePlace(ctx, PlaceCommand{CustomerID: cmd.CustomerID, Items: cmd.Items, IdempotencyKey: cmd.IdempotencyKey})
 	return o, err
 }
 

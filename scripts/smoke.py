@@ -39,7 +39,8 @@ def main():
     products = [call("POST", "/api/v1/products", admin, {"sku": suffix + str(i), "name": "Item " + str(i), "price_minor": price}, 201) for i, price in enumerate([1299, 299])]
     call("POST", "/api/v1/products", customer, {"sku": "forbidden", "name": "Item", "price_minor": 1}, 403)
     payload = {"items": [{"product_id": p["id"], "quantity": qty} for p, qty in zip(products, [2, 3])]}
-    cancelled = call("POST", "/api/v1/orders", customer, payload, 201)
+    call("POST", "/api/v1/orders", customer, payload, 422)
+    cancelled = call("POST", "/api/v1/orders", customer, payload, 201, key="cancel-" + suffix)
     cancel_result = call("POST", "/api/v1/orders/" + cancelled["id"] + "/cancel", customer, expected=(200, 409))
     cancelled_state = call("GET", "/api/v1/orders/" + cancelled["id"], customer)["status"]
     assert cancelled_state in ("CANCELLED", "PROCESSING")
@@ -74,10 +75,11 @@ def main():
     assert len(call("GET", "/api/v1/orders?limit=1&cursor=" + page["next_cursor"], customer)["items"]) == 1
     quote_region = "IN" if os.environ.get("SMOKE_EXPECT_WORKER") == "1" else "US"
     quote = call("POST", "/api/v1/order-quotes", customer, dict(payload, region=quote_region), 201)
-    quoted = call("POST", "/api/v1/orders", customer, {"quote_id": quote["id"]}, 201)
+    call("POST", "/api/v1/orders", customer, {"quote_id": quote["id"]}, 422)
+    quoted = call("POST", "/api/v1/orders", customer, {"quote_id": quote["id"]}, 201, key="quote-" + suffix)
     assert quoted["currency"] == quote["currency"] and quoted["total_minor"] == quote["total_minor"]
-    assert call("POST", "/api/v1/orders", customer, {"quote_id": quote["id"]})["id"] == quoted["id"]
-    call("POST", "/api/v1/orders", other, {"quote_id": quote["id"]}, 404)
+    assert call("POST", "/api/v1/orders", customer, {"quote_id": quote["id"]}, key="quote-" + suffix)["id"] == quoted["id"]
+    call("POST", "/api/v1/orders", other, {"quote_id": quote["id"]}, 404, key="foreign-quote-" + suffix)
     call("POST", "/api/v1/auth/logout", customer, expected=204)
     call("GET", path, customer, expected=401)
     print("API smoke test passed: auth, catalog, orders, idempotency, isolation, transitions, cancellation, pagination, logout")

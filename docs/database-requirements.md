@@ -212,7 +212,8 @@ still need a dependable customer identifier and ownership checks.
 ## 5. order_idempotency — durable protection against duplicate creation
 
 This extends R1 so a client can safely retry a request after a timeout or lost
-response.
+response. Every order creation request must now provide a valid key; the same key
+and payload must survive client restarts and be reused for retries.
 
 | Column | Significance |
 | --- | --- |
@@ -233,7 +234,8 @@ Current behavior:
 
 - Same key and payload → existing order's current state, HTTP 200.
 - Same key with different payload → HTTP 409.
-- No key → repeated items-only requests can create separate orders.
+- Missing key → HTTP 422 for both items and quote order requests; no order writes.
+- A different key on an items-only retry identifies a new purchase and can create another order.
 - No automatic key purge is implemented.
 
 ### Why keep retry bindings separately from orders?

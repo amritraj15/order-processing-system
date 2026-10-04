@@ -91,7 +91,16 @@ func TestCustomerAndAdminOrderFlow(t *testing.T) {
 	call("GET", "/api/v1/products/"+p1, customer, nil, 200)
 	call("GET", "/api/v1/products?limit=1", customer, nil, 200)
 	payload := map[string]any{"items": []map[string]any{{"product_id": p1, "quantity": 2}, {"product_id": p2, "quantity": 3}}}
-	created := call("POST", "/api/v1/orders", customer, payload, 201)
+	// Missing keys on either request form are rejected without creating records.
+	call("POST", "/api/v1/orders", customer, payload, 422)
+	call("POST", "/api/v1/orders", customer, map[string]string{"quote_id": uuid.NewString()}, 422)
+	for _, table := range []string{"orders", "order_items", "order_idempotency"} {
+		var count int64
+		if err := db.Table(table).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("missing key mutated %s: %d %v", table, count, err)
+		}
+	}
+	created := call("POST", "/api/v1/orders", customer, payload, 201, uuid.NewString())
 	id := created["id"].(string)
 	if created["total_minor"] != float64(3495) || len(created["items"].([]any)) != 2 {
 		t.Fatalf("incorrect totals: %+v", created)
@@ -102,11 +111,11 @@ func TestCustomerAndAdminOrderFlow(t *testing.T) {
 	call("POST", "/api/v1/orders/"+id+"/cancel", other, nil, 404)
 	call("PATCH", "/api/v1/orders/"+id+"/status", customer, map[string]string{"status": "PROCESSING"}, 403)
 	call("PATCH", "/api/v1/orders/"+id+"/status", admin, map[string]string{"status": "SHIPPED"}, 409)
-	call("POST", "/api/v1/orders", customer, map[string]any{"items": []any{}}, 422)
-	call("POST", "/api/v1/orders", customer, map[string]any{"items": []map[string]any{{"product_id": uuid.NewString(), "quantity": 1}}}, 422)
-	call("POST", "/api/v1/orders", customer, map[string]any{"items": []map[string]any{{"product_id": p1, "quantity": 1}, {"product_id": p1, "quantity": 1}}}, 422)
-	call("POST", "/api/v1/orders", customer, map[string]any{"items": []map[string]any{{"product_id": p1, "quantity": 1, "unit_price_minor": 1}}}, 400)
-	cancelID := call("POST", "/api/v1/orders", customer, payload, 201)["id"].(string)
+	call("POST", "/api/v1/orders", customer, map[string]any{"items": []any{}}, 422, uuid.NewString())
+	call("POST", "/api/v1/orders", customer, map[string]any{"items": []map[string]any{{"product_id": uuid.NewString(), "quantity": 1}}}, 422, uuid.NewString())
+	call("POST", "/api/v1/orders", customer, map[string]any{"items": []map[string]any{{"product_id": p1, "quantity": 1}, {"product_id": p1, "quantity": 1}}}, 422, uuid.NewString())
+	call("POST", "/api/v1/orders", customer, map[string]any{"items": []map[string]any{{"product_id": p1, "quantity": 1, "unit_price_minor": 1}}}, 400, uuid.NewString())
+	cancelID := call("POST", "/api/v1/orders", customer, payload, 201, uuid.NewString())["id"].(string)
 	call("POST", "/api/v1/orders/"+cancelID+"/cancel", customer, nil, 200)
 	call("POST", "/api/v1/orders/"+cancelID+"/cancel", customer, nil, 200)
 	if n, err := repo.ProcessBatch(context.Background(), time.Now(), 500); err != nil || n != 1 {
@@ -137,13 +146,13 @@ func TestCustomerAndAdminOrderFlow(t *testing.T) {
 	call("GET", "/api/v1/orders?limit=0", customer, nil, 422)
 	quoted := call("POST", "/api/v1/order-quotes", customer, payload, 201)
 	quotedID := quoted["id"].(string)
-	call("POST", "/api/v1/orders", other, map[string]string{"quote_id": quotedID}, 404)
-	createdQuoteOrder := call("POST", "/api/v1/orders", customer, map[string]string{"quote_id": quotedID}, 201)
-	repeated := call("POST", "/api/v1/orders", customer, map[string]string{"quote_id": quotedID}, 200)
+	call("POST", "/api/v1/orders", other, map[string]string{"quote_id": quotedID}, 404, uuid.NewString())
+	createdQuoteOrder := call("POST", "/api/v1/orders", customer, map[string]string{"quote_id": quotedID}, 201, uuid.NewString())
+	repeated := call("POST", "/api/v1/orders", customer, map[string]string{"quote_id": quotedID}, 200, uuid.NewString())
 	if repeated["id"] != createdQuoteOrder["id"] {
 		t.Fatal("quote retry duplicated order")
 	}
-	call("POST", "/api/v1/orders", customer, map[string]any{"quote_id": quotedID, "items": payload["items"]}, 422)
+	call("POST", "/api/v1/orders", customer, map[string]any{"quote_id": quotedID, "items": payload["items"]}, 422, uuid.NewString())
 	call("POST", "/api/v1/order-quotes", customer, map[string]any{"region": "XX", "items": payload["items"]}, 422)
 	call("POST", "/api/v1/order-quotes", customer, map[string]any{"region": "IN", "items": payload["items"]}, 409)
 	// General idempotency applies to both request forms, with customer isolation.

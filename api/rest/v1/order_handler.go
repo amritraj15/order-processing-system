@@ -115,12 +115,11 @@ func (h *OrderHandler) Create(c *echo.Context) error {
 	}
 	customer := uuid.MustParse(middleware.Claims(c).UserID)
 	cmd := service.PlaceCommand{CustomerID: customer}
-	if keys, present := c.Request().Header["Idempotency-Key"]; present {
-		if len(keys) != 1 || !service.ValidIdempotencyKey(keys[0]) {
-			return echo.NewHTTPError(422, "Idempotency-Key must be a single 1–128 character value using letters, digits, ., _, :, or -")
-		}
-		cmd.IdempotencyKey = keys[0]
+	keys := c.Request().Header.Values("Idempotency-Key")
+	if len(keys) != 1 || !service.ValidIdempotencyKey(keys[0]) {
+		return echo.NewHTTPError(422, "Idempotency-Key is required and must be a single 1–128 character value using letters, digits, ., _, :, or -")
 	}
+	cmd.IdempotencyKey = keys[0]
 	if req.QuoteID != "" {
 		if req.Items != nil {
 			return c.JSON(422, map[string]any{"error": "quote_id and items are mutually exclusive", "details": map[string]string{"reason": "quote_required_fields"}})

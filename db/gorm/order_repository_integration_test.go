@@ -44,7 +44,7 @@ func TestOrderTransactionSnapshotsAndStatus(t *testing.T) {
 	repo := &database.OrderRepository{DB: db}
 	unit := &database.UnitOfWork{DB: db}
 	s := &orderservice.Service{Repo: repo, UOW: unit, Currency: "USD"}
-	o, err := s.HandleCreate(ctx, orderservice.CreateCommand{CustomerID: customer, Items: []order.ItemInput{{ProductID: p.ID, Quantity: 2}}})
+	o, err := s.HandleCreate(ctx, orderservice.CreateCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, Items: []order.ItemInput{{ProductID: p.ID, Quantity: 2}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestOrderTransitionUsesDatabaseTime(t *testing.T) {
 	customer, product := fixtures(t, db)
 	ctx := context.Background()
 	service := &orderservice.Service{UOW: &database.UnitOfWork{DB: db}}
-	o, err := service.HandleCreate(ctx, orderservice.CreateCommand{CustomerID: customer, Items: []order.ItemInput{{ProductID: product.ID, Quantity: 1}}})
+	o, err := service.HandleCreate(ctx, orderservice.CreateCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, Items: []order.ItemInput{{ProductID: product.ID, Quantity: 1}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,6 @@ func TestPendingBatchesConcurrencyCutoffAndQueryPlan(t *testing.T) {
 	db := testutil.PostgreSQL(t)
 	customer, _ := fixtures(t, db)
 	ctx := context.Background()
-	repo := &database.OrderRepository{DB: db}
 	if err := db.Exec(`INSERT INTO orders (id,customer_id,status,currency,total_minor,created_at,pricing_mode)
         SELECT gen_random_uuid(), ?, 'DELIVERED', 'USD', 100, now() - interval '1 day', 'legacy' FROM generate_series(1,20000)`, customer).Error; err != nil {
 		t.Fatal(err)
@@ -173,6 +172,7 @@ func TestPendingBatchesConcurrencyCutoffAndQueryPlan(t *testing.T) {
 	failures := make(chan error, 4)
 	start := make(chan struct{})
 	for i := 0; i < 4; i++ {
+		repo := &database.OrderRepository{DB: testutil.Reconnect(t, db)}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -222,8 +222,9 @@ func TestCancellationAndProcessingRace(t *testing.T) {
 	ctx := context.Background()
 	repo := &database.OrderRepository{DB: db}
 	service := &orderservice.Service{Repo: repo, UOW: &database.UnitOfWork{DB: db}, Currency: "USD"}
+	workerRepo := &database.OrderRepository{DB: testutil.Reconnect(t, db)}
 	for i := 0; i < 20; i++ {
-		o, err := service.HandleCreate(ctx, orderservice.CreateCommand{CustomerID: customer, Items: []order.ItemInput{{ProductID: p.ID, Quantity: 1}}})
+		o, err := service.HandleCreate(ctx, orderservice.CreateCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, Items: []order.ItemInput{{ProductID: p.ID, Quantity: 1}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +238,7 @@ func TestCancellationAndProcessingRace(t *testing.T) {
 			<-start
 			_, cancelErr = repo.Transition(ctx, o.ID, &customer, order.Pending, order.Cancelled)
 		}()
-		go func() { defer wg.Done(); <-start; count, processErr = repo.ProcessBatch(ctx, time.Now(), 1) }()
+		go func() { defer wg.Done(); <-start; count, processErr = workerRepo.ProcessBatch(ctx, time.Now(), 1) }()
 		close(start)
 		wg.Wait()
 		if processErr != nil {
@@ -266,7 +267,7 @@ func TestPendingSkipsLockedRowsAndRollsBackFailedBatch(t *testing.T) {
 	s := &orderservice.Service{Repo: repo, UOW: &database.UnitOfWork{DB: db}, Currency: "USD"}
 	create := func() *order.Order {
 		t.Helper()
-		o, err := s.HandleCreate(ctx, orderservice.CreateCommand{CustomerID: customer, Items: []order.ItemInput{{ProductID: p.ID, Quantity: 1}}})
+		o, err := s.HandleCreate(ctx, orderservice.CreateCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, Items: []order.ItemInput{{ProductID: p.ID, Quantity: 1}}})
 		if err != nil {
 			t.Fatal(err)
 		}

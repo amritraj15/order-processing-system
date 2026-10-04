@@ -42,19 +42,21 @@ func TestQuoteConcurrencyAndPersistentSnapshots(t *testing.T) {
 		t.Fatalf("rounded total: %d", q.TotalMinor)
 	}
 	os := &orders.Service{Repo: &database.OrderRepository{DB: db}, UOW: unit}
-	if _, _, err := os.HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{CustomerID: uuid.New(), QuoteID: q.ID}); !errors.Is(err, shared.ErrNotFound) {
+	if _, _, err := os.HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: uuid.New(), QuoteID: q.ID}); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatal("quote leaked")
 	}
+	replicas := []*orders.Service{os, {UOW: &database.UnitOfWork{DB: testutil.Reconnect(t, db)}}}
 	var wg sync.WaitGroup
 	ids := make(chan uuid.UUID, 8)
 	errs := make(chan error, 8)
 	start := make(chan struct{})
 	for i := 0; i < 8; i++ {
+		replica := replicas[i%len(replicas)]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			o, _, err := os.HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{CustomerID: customer, QuoteID: q.ID})
+			o, _, err := replica.HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, QuoteID: q.ID})
 			if err != nil {
 				errs <- err
 				return
@@ -86,7 +88,7 @@ func TestQuoteConcurrencyAndPersistentSnapshots(t *testing.T) {
 	if _, err := (&database.QuoteRepository{DB: db}).DeleteExpiredBatch(ctx, q.ExpiresAt.Add(time.Hour), 500); err != nil {
 		t.Fatal(err)
 	}
-	replay, again, err := os.HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{CustomerID: customer, QuoteID: q.ID})
+	replay, again, err := os.HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, QuoteID: q.ID})
 	if err != nil || !again || replay.TotalMinor != 6496 || replay.Pricing.Rate != "2.500000000000" {
 		t.Fatalf("replay/provenance: %+v %v", replay, err)
 	}
@@ -179,7 +181,7 @@ func TestQuoteExpiryCheckedAfterLockWait(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, _, err := (&orders.Service{UOW: unit}).HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{CustomerID: customer, QuoteID: q.ID})
+		_, _, err := (&orders.Service{UOW: unit}).HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, QuoteID: q.ID})
 		result <- err
 	}()
 	deadline := time.Now().Add(3 * time.Second)
@@ -217,7 +219,7 @@ func TestQuoteConsumptionFailureRollsBackOrder(t *testing.T) {
  CREATE TRIGGER reject_quote_consumption BEFORE UPDATE ON order_quotes FOR EACH ROW EXECUTE FUNCTION reject_quote_consumption();`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := (&orders.Service{UOW: unit}).HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{CustomerID: customer, QuoteID: q.ID}); err == nil {
+	if _, _, err := (&orders.Service{UOW: unit}).HandleCreateFromQuote(ctx, orders.CreateFromQuoteCommand{IdempotencyKey: uuid.NewString(), CustomerID: customer, QuoteID: q.ID}); err == nil {
 		t.Fatal("expected consumption failure")
 	}
 	var count int64

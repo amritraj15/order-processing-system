@@ -295,7 +295,7 @@ paths:
       parameters:
       - in: header
         name: Idempotency-Key
-        required: false
+        required: true
         description: Case-sensitive customer-scoped retry key. Supply one value per request and reuse it with the same payload on retry. Keys do not expire.
         schema:
           type: string
@@ -383,13 +383,14 @@ paths:
       description: Use items alone for a direct base-currency purchase. Use quote_id
         alone for an accepted regional quote. A successful retry of the same quote
         returns the existing order with 200, even after expiry; new orders return
-        201. Optional Idempotency-Key applies to either form. The same customer/key
+        201. Required Idempotency-Key applies to either form. The same customer/key
         and decoded payload return the original order in its current state with 200;
         different payload reuse returns 409 with details.reason idempotency_key_conflict.
         JSON whitespace/property order and UUID case normalize; item array order is significant.
-        Invalid, empty or multiple key headers return 422. Failed transactions do not retain keys.
-        Unkeyed items-only retries can create duplicate orders. The optional header
-        preserves existing clients; clients implementing retries should always supply it.
+        Missing, invalid, empty or multiple key headers return 422. Failed transactions do not retain keys.
+        Persist the key before sending and reuse it across retries and restarts.
+        Changing keys on an items-only retry can create another order.
+        The header is mandatory even when quote identity also prevents duplicate consumption.
         Keyed creation has a 10s overall deadline, a 2s lock timeout and a 5s statement timeout.
         Timeout responses are 503 with Retry-After 1; retry with the same key and payload.
   "/api/v1/orders/{id}":

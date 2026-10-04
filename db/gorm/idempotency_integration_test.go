@@ -41,13 +41,17 @@ func TestIdempotentCreateConcurrentRequests(t *testing.T) {
 		replay bool
 		err    error
 	}
+	// Independent pools and services model separate API replicas sharing PostgreSQL.
+	other := &orders.Service{UOW: &database.UnitOfWork{DB: testutil.Reconnect(t, db)}}
+	replicas := []*orders.Service{s, other}
 	results := make(chan result, 8)
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for range 8 {
+	for i := range 8 {
+		replica := replicas[i%len(replicas)]
 		wg.Go(func() {
 			<-start
-			o, replay, err := s.HandlePlace(ctx, cmd)
+			o, replay, err := replica.HandlePlace(ctx, cmd)
 			results <- result{o, replay, err}
 		})
 	}
@@ -94,8 +98,9 @@ func TestIdempotentCreateConcurrentRequests(t *testing.T) {
 	if _, err := s.HandleCancel(ctx, orders.CancelCommand{ID: id, CustomerID: uuid.New()}); !errors.Is(err, shared.ErrNotFound) {
 		t.Fatalf("foreign cancel: %v", err)
 	}
-	// A new service instance replays durable state after a lost response/restart.
-	restarted := &orders.Service{UOW: &database.UnitOfWork{DB: db}}
+	// A new service and pool replay durable state after a lost response.
+	// This exercises reconnection, not a killed OS process or PostgreSQL failover.
+	restarted := &orders.Service{UOW: &database.UnitOfWork{DB: testutil.Reconnect(t, db)}}
 	o, replay, err := restarted.HandlePlace(ctx, cmd)
 	if err != nil || !replay || o.ID != id || o.Status != order.Cancelled || o.TotalMinor != 2598 {
 		t.Fatalf("restart replay: %+v %v", o, err)
