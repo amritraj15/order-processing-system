@@ -833,6 +833,7 @@ The following matrix explains the architectural risks covered by those tests.
 | Requirements through API + PostgreSQL | Roles/ownership, catalog, multi-item order, totals, skip/cancel rules, processing/delivery, filtering/cursors, quote creation/replay, logout. [Scenario](api/rest/routes/routes_integration_test.go). |
 | Create retry safety | Service replay/conflict/owner scope and fingerprint tests; DB concurrency, rollback, quote aliases and key retention. [Service tests](service/order/place_handler_test.go), [DB tests](db/gorm/idempotency_integration_test.go). |
 | Order persistence/concurrency | Snapshot persistence after catalog change, transactional rollback, concurrent batches/cutoff, 20 cancellation races, skipping locked rows, failed batch rollback, pending index EXPLAIN. [Tests](db/gorm/order_repository_integration_test.go). |
+| Backlog plan comparison (opt-in) | 200,000 pending plus 50,000 delivered rows, production batch SQL against a primary-key rewrite, EXPLAIN at full backlog and near the end, committed-batch timings, final-state assertions. [Test](db/gorm/pending_backlog_plan_integration_test.go). |
 | Transition timestamps | A transition's `updated_at` matches database transaction time, independent of application timestamp generation. [Repository tests](db/gorm/order_repository_integration_test.go). |
 | Pricing persistence/concurrency | Eight concurrent submissions producing one order, replay after cleanup, currency mismatch, serialized initialization/rate imports, legacy adoption, expiry after lock wait, rollback if consumption fails. [Tests](db/gorm/pricing_integration_test.go). |
 | Migrations and cleanup | Migration round trip/legacy preservation, down guards, quote-expiry cleanup index EXPLAIN. [Tests](db/gorm/migrations_integration_test.go). |
@@ -841,8 +842,9 @@ The following matrix explains the architectural risks covered by those tests.
 The controlled API integration test is designed to verify successful pending cancellation. The
 fast Docker smoke accepts 200 or 409 for cancellation because its worker can win
 the race; that flexible smoke result alone is insufficient evidence of successful
-cancellation. The pending query-plan fixture includes 20000 delivered and 1201
-pending rows; it tests query behavior, not production throughput.
+cancellation. The standard pending query-plan fixture includes 20,000 delivered
+and 1,201 pending rows; it tests query behavior, not production throughput. The
+opt-in backlog test above covers 200,000 pending rows.
 
 Use `make acceptance` locally for dependency, build, vet, race,
 migration, PostgreSQL integration and Docker checks. It stores diagnostics in ignored `.cache/acceptance/`. The runner currently does not produce a statement-coverage
