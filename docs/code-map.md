@@ -859,3 +859,9 @@ Saved output used by the adjacent scheduler note. Contains observations, not exe
 **Mapping:** All; code walkthrough.
 
 This reference connects files and callable declarations to requirements. It contains no runtime methods.
+
+### [docs/database-requirements.md](database-requirements.md)
+
+**Mapping:** All; database reference.
+
+Explains each application table and column, important constraints and indexes, and their relationship to the requirements and supporting features. It contains no runtime methods.
