@@ -18,11 +18,11 @@ Run the checks in [TESTING.md](TESTING.md) locally.
 | List orders, optionally filtered by status | Use owner/status filters and cursor pagination. |
 | Cancel only while pending | Apply a conditional PENDING → CANCELLED update in a transaction. |
 
-Approved additions are customer/admin authentication, an admin-managed catalog,
+Additional features beyond the assignment include customer/admin authentication, an admin-managed catalog,
 regional price quotes backed by managed exchange rates, quote replay protection,
 authentication limits, readiness checks, structured logs and acceptance tooling.
 Payments, inventory reservation, delivery-provider integration, product editing,
-frontend UI, password recovery and refresh tokens remain outside this assignment.
+frontend UI, password recovery and refresh tokens are not implemented.
 SHIPPED and DELIVERED are recorded statuses; there is no external shipment action.
 
 ## 2. Why Go for this system?
@@ -303,7 +303,7 @@ Unkeyed items-only requests can still duplicate after an ambiguous failure.
 ### Decision: durable idempotency records
 
 **Decision:** use `order_idempotency` instead of adding a single key/hash pair to
-`orders`. This is an approved extension to create retries, implemented in
+`orders`. This supports create retries and is implemented in
 [migration 000004](db/migrations/000004_order_idempotency.up.sql), the
 [transaction coordinator](service/order/place_handler.go) and
 [repository](db/gorm/idempotency_repository.go).
@@ -413,12 +413,7 @@ Indefinite retention grows storage; enabling the proposed bounded retention or a
 maximum keys-per-order policy requires an explicit contract. The down migration
 refuses nonempty key data so rollback cannot silently erase retry protection.
 
-**Coverage:** this contract applies to **2/2 supported create forms
-(100% of request forms)**. That denominator says nothing about production traffic,
-branch/line coverage, or whether clients actually supply a key. The incidence of
-multiple keys for one quote is unknown; no measured percentage justifies this
-choice. Its justification is a defined API case already enabled by quote replay.
-The service tests cover replay/conflict, ownership, unchanged historical prices,
+**Tests:** the service tests cover replay/conflict, ownership, unchanged historical prices,
 current status, unkeyed compatibility and fingerprint stability. PostgreSQL tests
 cover concurrent same-key requests, transaction rollback including quote
 consumption, durable replay and guarded migration rollback; HTTP integration
@@ -569,6 +564,62 @@ cancelling that order does not make the quote reusable. A different customer get
 404. Workers remove up to 500 quotes per tick once they are at least 24 hours past
 expiry; durable order snapshots retain the accepted terms.
 
+### Regional pricing setup and API examples
+
+Existing products/orders require an operator to confirm the original denomination:
+
+```sh
+docker compose run --rm api catalog init --currency USD --confirm-existing
+```
+
+Stop old writers before migration/adoption. Conflicting historical currencies
+require investigation; initialization never guesses or repairs stored amounts.
+For existing deployments: back up data, stop the API, apply migrations, confirm
+currency, import rates, then start the new API. Fresh catalogs initialize at startup.
+
+Import a positive decimal target/base rate with a finite UTC validity interval:
+
+```sh
+# Set RATE, VALID_FROM and VALID_UNTIL from your reviewed pricing configuration.
+docker compose run --rm api rates add --target INR --rate "$RATE" \
+  --valid-from "$VALID_FROM" --valid-until "$VALID_UNTIL" --source operator-config
+```
+
+Rates are immutable, non-overlapping per pair, and manually managed. These are
+configured conversion prices, not a live market feed. No rates are seeded by normal
+startup; the isolated Docker smoke uses an explicitly labelled fixture. Schedule
+consecutive rate validity intervals before expiry to keep regional quotes available.
+Base-to-base pricing uses rate 1. Missing/expired FX rates return 409 without fallback.
+
+```sh
+curl -s http://localhost:8080/api/v1/order-quotes \
+  -H "Authorization: Bearer $CUSTOMER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"region":"IN","items":[{"product_id":"PRODUCT_UUID_1","quantity":2}]}'
+
+# Copy the quote ID. Omit region above to use STORE_REGION.
+curl -s http://localhost:8080/api/v1/orders \
+  -H "Authorization: Bearer $CUSTOMER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"quote_id":"QUOTE_UUID"}'
+```
+
+### Migration and upgrade procedures
+
+Migrations 000002/000003 add catalog/rates/quotes and optional legacy provenance.
+Migration 000004 adds durable idempotency records. Migration 000005 adds
+`created_at` if an earlier version-4 database lacks it, preserving timestamps in
+databases that already have the column. Apply all migrations before starting this
+binary; readiness requires version 5. Existing keys missing timestamps receive
+the upgrade time, conservatively starting their retention age then. No database
+volume reset is needed. Migration 000005's down step keeps the compatible column
+and its data; 000004's down step refuses while keys exist to preserve retry
+guarantees. An expected refused downgrade leaves golang-migrate's dirty flag set;
+acceptance tests exercise that refusal only in disposable schemas.
+Use a maintenance window; old writers cannot safely coexist with the new schema.
+The quote down migration refuses while quotes or new-format orders exist. The
+pricing down migration refuses while rates or mismatched order currencies exist.
+After new monetary writes, use forward repair; restoring a backup loses later
+writes and is a separate operator decision. Reversibility tests use disposable data.
+
 ## 5. API contract
 
 The authoritative field schemas are in [OpenAPI](docs/openapi.yaml); route registration
@@ -699,9 +750,10 @@ constraints enforce the specific order/quote invariants; this is not a blanket
 claim of serializable workflows or a snapshot spanning multiple API requests.
 [PostgreSQL isolation behavior](https://www.postgresql.org/docs/18/transaction-iso.html).
 
-A lock held only for each drain prevents simultaneous drains but does not by
-itself establish a global five-minute schedule: staggered replicas can acquire
-that lock one after another. A strict global cadence needs one active scheduler
+Even if each drain held a cross-process lock, staggered replicas could acquire
+it one after another, so that would not establish a global five-minute schedule.
+The current implementation prevents overlapping drains only within one process.
+A strict global cadence needs one active scheduler
 or coordinated scheduled slots, with explicit failover/restart behavior. Merely
 moving the same ticker into several dedicated worker replicas retains the issue.
 
@@ -712,9 +764,17 @@ moving the same ticker into several dedicated worker replicas retains the issue.
 The application limits request bodies, items per order, page size, auth concurrency,
 auth limiter keys, worker batch size and quote cleanup. The DB pool is currently
 hard-coded to 20 open / 5 idle connections per process, with a 30-minute lifetime.
-HTTP and worker share that pool. The partial pending index makes the queue's
-search path independent of the size of most historical order data, but processing
-still costs work proportional to the pending rows updated.
+HTTP and worker share that pool. The partial pending index keeps historical
+non-PENDING orders out of the queue lookup. Batch size bounds the number of rows
+updated, but does not necessarily bound the rows scanned by the update's join.
+
+In the local integration run with 1,201 pending rows, PostgreSQL selected 100 rows
+for the batch but used a bitmap scan over the pending backlog on the
+`UPDATE ... FROM batch` side. Repeated batches can therefore repeatedly scan the
+remaining queue. Before scaling to large backlogs, check `EXPLAIN ANALYZE` on a
+larger fixture and, if needed, restructure the update to use primary-key lookups
+for the selected IDs. The planner may choose a different plan at another scale;
+the small fixture does not establish a production throughput bound.
 
 Successful authenticated requests also perform a denylist lookup and a current
 user lookup. Measure that cost alongside order queries. Caching either can delay
@@ -731,7 +791,7 @@ the five-minute interval is not a proven five-minute end-to-end SLA.
 
 | Stage | Change / decision | Evidence needed before proceeding |
 | --- | --- | --- |
-| 1 — Establish a working baseline | Automated acceptance passed; next measure one API/worker process and PostgreSQL with representative carts/history. | API p50/p95/p99 latency, errors, order throughput, DB pool waits, locks, CPU/I/O and oldest pending age. No baseline numbers are available yet. |
+| 1 — Establish a working baseline | Local acceptance and a five-minute scheduler run were performed by the author; the scheduler run is recorded in the [demo note](docs/reviews/order-processing-hardening/verification/native-five-minute-demo/README.md). Next, measure one API/worker process and PostgreSQL with representative carts/history and pending backlogs. | API p50/p95/p99 latency, errors, order throughput, DB pool waits, query plans, locks, CPU/I/O and oldest pending age. No load-test baseline numbers are available yet. |
 | 2 — Tune the current deployment | Tune DB resources, indexes/query plans and processing batch size; make connection limits configurable if needed. | Confirm that throughput improves without making API latency or lock waits unacceptable. More goroutines alone cannot increase DB capacity. |
 | 3 — Add API replicas | Use a load balancer and shared primary database; consistent JWT/region settings, readiness routing and global ingress limits. | Budget up to `20 × replica_count` application connections with room for migrations/admin/monitoring; load and revocation consistency tests. A different deployment configuration is required. |
 | 4 — Separate scheduling/work capacity | Add independent API/worker modes and a dedicated scheduler or coordinated schedule if global cadence matters. | Failure/restart tests and a clearly defined timing contract. Do not merely add a worker: the current API always embeds one, so it must be disabled/extracted as part of this change. |

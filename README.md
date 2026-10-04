@@ -19,7 +19,7 @@ All endpoints below use the `/api/v1` prefix and a Bearer token.
 
 `CANCELLED` is an additional terminal status used to record cancellation. Admins
 advance order status; customers place and cancel their own orders. Authentication,
-catalog pricing and regional quotes are approved extensions to the assignment.
+catalog pricing and regional quotes are additional features beyond the assignment.
 The core items-only order flow uses base currency and needs no FX-rate setup.
 It still requires authentication and catalog products; there is no unauthenticated
 or catalog-free order mode.
@@ -29,7 +29,7 @@ on a host with Go, Python 3 and Docker access. It provisions the admin, customer
 products and isolated database automatically, exercises the APIs, and cleans up.
 It uses a **five-second** worker interval; the
 [live-demo runbook](docs/plans/order-processing-hardening/05-live-demo.md) covers
-the actual five-minute timing. Full verification is `make acceptance`.
+the actual five-minute timing. Run `make acceptance` for the complete local test suite.
 
 Start with this README and the
 [requirements/test matrix](docs/plans/order-processing-hardening/04-test-plan.md).
@@ -52,83 +52,18 @@ work beyond that scope.
 | Capacity and operations | Indexed queries, bounded batches, cursor pagination, connection limits, worker-aware readiness, structured logs and per-process auth limits. | Production throughput is unmeasured. Add load tests, metrics and tracing; coordinate auth limits across replicas when needed. Use measurements to guide caching or database scaling. |
 | Availability | Order data is persisted in PostgreSQL; transactions protect atomic writes and readiness checks database health. The supplied deployment uses one database instance. | Automated failover and backup/restore procedures are not provided or tested. Add them before making production availability commitments. |
 
-Repeated cancellation returns 200 with the owned CANCELLED order, without changing
-its timestamp. Cancellation of PROCESSING, SHIPPED or DELIVERED still returns 409.
+Cancellation is retry-safe: repeating it returns 200 with the owned CANCELLED
+order, without changing its timestamp. Cancellation of PROCESSING, SHIPPED or
+DELIVERED returns 409.
 
-## Retry-safe order creation and the table decision
+## Retry-safe order creation
 
-Send an optional `Idempotency-Key` on `POST /api/v1/orders`, with either `items`
-or `quote_id`. Use one new key for each intended purchase and reuse it on retries.
-Keys are case-sensitive, customer-scoped, 1–128 characters from `A–Z a–z 0–9 . _ : -`.
-Empty, repeated or invalid headers return 422. The header remains optional to
-preserve the original API contract and existing clients. Any client that retries
-items-only creation should require and persist a key for each intended purchase;
-server-wide enforcement would need an announced API migration.
-
-```sh
-curl -i http://localhost:8080/api/v1/orders \
-  -H "Authorization: Bearer $CUSTOMER_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: checkout-2026-001' \
-  -d "{\"items\":[{\"product_id\":\"$PRODUCT_ID\",\"quantity\":2}]}"
-```
-
-First creation returns 201. The same key and payload return the original order
-with 200, including its **current** status and original price snapshots. A different
-payload returns 409 with `details.reason = idempotency_key_conflict`. JSON whitespace,
-object property order and UUID letter case do not change the fingerprint; item
-array order does. Failed transactions do not reserve a key. Quote replay still
-returns 200 without a header, even after quote expiry/cleanup.
-
-**Why a separate table?** Columns on `orders` would be sufficient if every order
-had exactly one key. The quote API permits multiple keys to identify one existing
-order, so `order_idempotency(customer_id, idempotency_key, request_hash, order_id, created_at)`
-stores that many-to-one relationship. For example:
-
-1. Quote Q submitted with key A creates order O.
-2. The same quote submitted with key B returns O and records B → Q → O.
-3. A later, different purchase using B returns 409. Ignoring B in step 2 would let
-   that key create an unrelated order; replacing A with B would lose A's binding.
-
-Quote uniqueness already prevents duplicate orders in step 2. The extra table
-preserves **every accepted key's payload binding**, rather than adding another
-quote-duplication safeguard. A one-key-per-order design could instead reject B;
-that is a valid simpler alternative with a stricter API contract.
-
-The table and order/items commit together. Transaction-scoped database locks
-serialize matching customer/key requests across replicas; a crash or rollback
-releases the lock and leaves no partial key/order pair. The cost is another row,
-index entry and lookup/insert for keyed requests, plus lock waits for retries.
-
-**Retention:** `created_at` is a database-generated timestamp, unchanged by replay.
-A proposed production policy is **30 days from first successful key insertion**;
-24 hours is a possible shorter window only if all clients' retry/reconciliation
-needs fit within it. Automatic expiry/deletion is **not implemented**: keys still
-remain indefinitely in this version. Before enabling cleanup, publish the retry
-window and add indexed, bounded deletion coordinated with key acquisition.
-After deletion, a late items-only retry could create another order. Clients must
-never recycle purchase keys; quote uniqueness survives key deletion separately.
-
-**Replay tradeoff:** this API returns the original order's current representation,
-so a replay after cancellation returns CANCELLED with 200. It preserves purchase
-identity/prices, but does not reproduce the first HTTP status/body byte for byte.
-Storing the original response would provide exact response replay at the cost of
-additional storage and an intentionally historical status in that response.
-
-**Pool protection:** keyed creation has a 10-second overall deadline, including
-pool acquisition, and transaction-local PostgreSQL limits of 2 seconds per lock
-wait and 5 seconds per statement. Earlier caller deadlines take precedence.
-Timeouts return 503 with `Retry-After: 1`; retry with backoff and the **same key and
-payload**, since a failed/ambiguous commit response does not prove no order exists.
-These bounds reduce pressure on the 20-connection pool per instance; they do not
-replace admission controls or load testing. They do not cover unkeyed requests.
-
-**Coverage, not a traffic estimate:** the design supports both create forms
-(items and quote), **2 of 2 request forms (100%)**. This is not 100% test coverage,
-production traffic coverage, or a guarantee for items requests without a key.
-The frequency of the multiple-key quote case is **unmeasured**; no percentage or
-performance benefit is claimed. See the
-[architecture decision](architecture.md#decision-durable-idempotency-records).
+Send an optional `Idempotency-Key` with an items or quote request. First creation
+returns 201; the same customer, key and payload return the original order in its
+current state with 200. Reusing the key with a different payload returns 409.
+Items-only retries without a key can create duplicates; quote submissions also
+support replay by quote ID. See the [idempotency design](architecture.md#decision-durable-idempotency-records)
+for the table choice, key format, transaction handling, timeouts and retention.
 
 ## Run with Docker
 
@@ -191,7 +126,7 @@ curl -s "http://localhost:8080/api/v1/orders/$ORDER_ID" \
 curl -s 'http://localhost:8080/api/v1/orders?status=PENDING&limit=20' \
   -H "Authorization: Bearer $CUSTOMER_TOKEN"
 
-# Cancellation succeeds only while PENDING.
+# Cancel a PENDING order; retrying an already CANCELLED order also returns 200.
 curl -s -X POST "http://localhost:8080/api/v1/orders/$ORDER_ID/cancel" \
   -H "Authorization: Bearer $CUSTOMER_TOKEN"
 
@@ -208,7 +143,7 @@ curl -s -X POST http://localhost:8080/api/v1/auth/logout \
 | --- | --- | --- |
 | Create order | Own identity, derived from token | Forbidden |
 | Retrieve/list orders | Own orders | All orders |
-| Cancel order | Own PENDING orders | Forbidden |
+| Cancel order | Own PENDING orders; already CANCELLED retries return 200 | Forbidden |
 | Advance status | Forbidden | Any order, one stage at a time |
 | Browse products | Allowed | Allowed |
 | Add product | Forbidden | Allowed |
@@ -314,6 +249,8 @@ and `make test` exclude them. `make integration` enables the tag and requires
 `TEST_DATABASE_URL`. The worker suite includes a real ticker test with a short
 interval, while the Docker smoke exercises that scheduler against PostgreSQL.
 Neither substitutes for the two real five-minute ticks in the live demo.
+A completed local five-minute scheduler run is recorded in the
+[scheduler demo note](docs/reviews/order-processing-hardening/verification/native-five-minute-demo/README.md).
 
 Unit tests cover snapshot totals, invalid orders, arithmetic overflow, password
 limits, auth/token validation and revocation, JSON validation/error envelopes,
@@ -377,68 +314,18 @@ current role and active status gate every authenticated request.
 explicit, rather than GORM auto-migration. Admin creation rejects existing
 emails instead of silently promoting or replacing a customer.
 
-The assignment intentionally omits inventory, payments, product editing/deletion,
+This implementation intentionally omits inventory, payments, product editing/deletion,
 a frontend, refresh tokens, and password recovery. The application runs as a
 standalone service with PostgreSQL.
 
 
-## Regional pricing and managed rates
+## Regional pricing
 
-Products always expose prices in the persisted base currency. **The existing
-`POST /api/v1/orders` items-only request purchases in base currency**, regardless
-of `STORE_REGION`. For regional prices, obtain a quote and submit its ID instead.
-A region default changes new quotes, never existing catalog prices or orders.
-
-Supported mappings: US→USD, IN→INR, GB→GBP, JP→JPY, KW→KWD, DE/FR→EUR.
-Fresh catalogs derive base currency from STORE_REGION unless CURRENCY is explicit.
-Existing products/orders require an operator to confirm the original denomination:
-
-```sh
-docker compose run --rm api catalog init --currency USD --confirm-existing
-```
-
-Stop old writers before migration/adoption. Conflicting historical currencies
-require investigation; initialization never guesses or repairs stored amounts.
-For existing deployments: back up data, stop the API, apply migrations, confirm
-currency, import rates, then start the new API. Fresh catalogs initialize at startup.
-
-Import a positive decimal target/base rate with a finite UTC validity interval:
-
-```sh
-# Set RATE, VALID_FROM and VALID_UNTIL from your reviewed pricing configuration.
-docker compose run --rm api rates add --target INR --rate "$RATE" \
-  --valid-from "$VALID_FROM" --valid-until "$VALID_UNTIL" --source operator-config
-```
-
-Rates are immutable, non-overlapping per pair, and manually managed. These are
-configured conversion prices, not a live market feed. No rates are seeded by normal
-startup; the isolated Docker smoke uses an explicitly labelled fixture. Schedule
-consecutive rate validity intervals before expiry to keep regional quotes available.
-Base-to-base pricing uses rate 1. Missing/expired FX rates return 409 without fallback.
-
-```sh
-curl -s http://localhost:8080/api/v1/order-quotes \
-  -H "Authorization: Bearer $CUSTOMER_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"region":"IN","items":[{"product_id":"PRODUCT_UUID_1","quantity":2}]}'
-
-# Copy the quote ID. Omit region above to use STORE_REGION.
-curl -s http://localhost:8080/api/v1/orders \
-  -H "Authorization: Bearer $CUSTOMER_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"quote_id":"QUOTE_UUID"}'
-```
-
-A quote binds customer, items, quantities, region, rate and final amounts. It expires
-at the earlier of QUOTE_TTL or rate expiry. Changed items/region require a new quote;
-expiry returns 409. A first successful submission returns 201; retries return the
-same order with 200, even after expiry or quote cleanup. Another customer gets 404.
-Cancellation never makes a quote reusable. Direct items-only orders do not have
-this quote-specific retry guarantee.
-
-Conversion uses exact arithmetic with currency minor-unit precision (JPY 0, KWD 3,
-other supported currencies 2) and half-even rounding once per unit. Rounded unit
-prices multiply by quantities, and lines sum to the total. Zero-rounded or overflowing
-amounts are rejected. The `pricing` response records source values/rate metadata;
-legacy orders retain original values with unknown provenance fields set to null.
+Items-only orders use the catalog's persisted base currency. To purchase in a
+supported regional currency, obtain a quote and submit its `quote_id`. Conversion
+uses manually imported rates; changing region never changes existing prices or
+orders. See [regional pricing and quote handling](architecture.md#regional-pricing-exact-money-and-quote-consumption)
+and the [operator commands](architecture.md#regional-pricing-setup-and-api-examples).
 
 ## Authentication limits and operational logs
 
@@ -469,21 +356,10 @@ redacted logs, manifest snapshots and a JSON result under
 It does not use an existing application database. A failed prerequisite returns
 nonzero and records a blocked run, never a successful acceptance result.
 
-Migrations 000002/000003 add catalog/rates/quotes and optional legacy provenance.
-Migration 000004 adds durable idempotency records. Migration 000005 adds
-`created_at` if an earlier version-4 database lacks it, preserving timestamps in
-databases that already have the column. Apply all migrations before starting this
-binary; readiness requires version 5. Existing keys missing timestamps receive
-the upgrade time, conservatively starting their retention age then. No database
-volume reset is needed. Migration 000005's down step keeps the compatible column
-and its data; 000004's down step refuses while keys exist to preserve retry
-guarantees. An expected refused downgrade leaves golang-migrate's dirty flag set;
-acceptance tests exercise that refusal only in disposable schemas.
-Use a maintenance window; old writers cannot safely coexist with the new schema.
-The quote down migration refuses while quotes or new-format orders exist. The
-pricing down migration refuses while rates or mismatched order currencies exist.
-After new monetary writes, use forward repair; restoring a backup loses later
-writes and is a separate operator decision. Reversibility tests use disposable data.
+Apply all migrations before starting the API. Existing catalogs require explicit
+currency adoption; rollback guards protect order and retry data. See
+[migration and upgrade procedures](architecture.md#migration-and-upgrade-procedures)
+before upgrading an existing database.
 
 Run the local test commands in [TESTING.md](TESTING.md). Generated results stay
 in ignored `.cache/` storage and are not part of the submission.
