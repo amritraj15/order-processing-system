@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -60,7 +61,8 @@ func TestRetryableTimeoutResponse(t *testing.T) {
 		})
 		res := httptest.NewRecorder()
 		e.ServeHTTP(res, httptest.NewRequest("POST", "/timeout", nil))
-		if res.Code != 503 || res.Header().Get("Retry-After") != "1" || strings.Contains(res.Body.String(), "private") {
+		retry, parseErr := strconv.Atoi(res.Header().Get("Retry-After"))
+		if res.Code != 503 || parseErr != nil || retry < 1 || retry > 3 || strings.Contains(res.Body.String(), "private") {
 			t.Fatalf("unsafe or non-retryable timeout: %d %s", res.Code, res.Body)
 		}
 		var body APIError
@@ -85,6 +87,32 @@ func TestRequestLogsDoNotExposeBodyOrErrors(t *testing.T) {
 	for _, secret := range []string{"private-body", "sensitive", "postgres://", "password@"} {
 		if strings.Contains(buf.String(), secret) || strings.Contains(res.Body.String(), secret) {
 			t.Fatal("secret exposed")
+		}
+	}
+}
+
+func TestPanicDiagnosticsAndCallerCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		code int
+	}{{"/panic", 500}, {"/cancel", 499}} {
+		var logs strings.Builder
+		e := NewServer(slog.New(slog.NewJSONHandler(&logs, nil)))
+		e.GET("/panic", func(c *echo.Context) error { panic("secret-token-and-password") })
+		e.GET("/cancel", func(c *echo.Context) error { return context.Canceled })
+		r := httptest.NewRecorder()
+		e.ServeHTTP(r, httptest.NewRequest("GET", tc.path, nil))
+		if r.Code != tc.code {
+			t.Fatalf("%s: %d", tc.path, r.Code)
+		}
+		if strings.Contains(logs.String(), "secret-token-and-password") {
+			t.Fatal("panic value leaked")
+		}
+		if tc.path == "/panic" && (!strings.Contains(logs.String(), "stack") || !strings.Contains(logs.String(), "server_test.go")) {
+			t.Fatal("missing diagnostic stack")
+		}
+		if tc.path == "/cancel" && strings.Contains(logs.String(), `"level":"ERROR"`) {
+			t.Fatal("cancellation logged as server error")
 		}
 	}
 }

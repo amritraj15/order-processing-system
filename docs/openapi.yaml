@@ -5,7 +5,10 @@ info:
   version: 1.1.0
   description: Customer/admin orders with immutable base catalog prices and expiring
     region-selected quotes. All responses include a server-generated X-Request-ID.
-    Managed rates are not live market data.
+    Managed rates are not live market data. Business requests have a default 10s
+    context budget starting before authentication and a 16-request per-instance
+    admission limit. Overload, draining, deadlines and selected transient database
+    errors return 503 with Retry-After 1–3 seconds. Health and readiness bypass admission.
 servers:
 - url: "/"
 security:
@@ -72,6 +75,8 @@ paths:
                   maxLength: 72
                   description: Also limited to 72 UTF-8 bytes by bcrypt
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '201':
           "$ref": "#/components/responses/Session"
         '400':
@@ -114,6 +119,8 @@ paths:
                   type: string
                   maxLength: 72
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           "$ref": "#/components/responses/Session"
         '400':
@@ -141,6 +148,8 @@ paths:
       summary: Inspect an optional Bearer token
       description: Absent, expired, or revoked tokens return authenticated false.
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           "$ref": "#/components/responses/Session"
   "/api/v1/me":
@@ -150,6 +159,8 @@ paths:
       - BearerAuth: []
       summary: Compatibility alias for auth/session
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           "$ref": "#/components/responses/Session"
   "/api/v1/auth/logout":
@@ -160,6 +171,8 @@ paths:
       summary: Revoke this Bearer token until expiry
       description: A request without credentials is an idempotent no-op.
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '204':
           description: Logged out
         '401':
@@ -171,6 +184,8 @@ paths:
       - "$ref": "#/components/parameters/Limit"
       - "$ref": "#/components/parameters/Cursor"
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           description: Newest products first
           content:
@@ -218,6 +233,8 @@ paths:
                   format: int64
                   minimum: 1
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '201':
           description: Created
           headers:
@@ -245,6 +262,8 @@ paths:
     get:
       summary: Retrieve a product
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           description: Product
           content:
@@ -268,6 +287,8 @@ paths:
         schema:
           "$ref": "#/components/schemas/Status"
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           description: Newest orders first
           content:
@@ -346,7 +367,7 @@ paths:
             Retry-After:
               schema:
                 type: string
-              description: Suggested minimum delay in seconds (1).
+              description: Suggested minimum delay in seconds (randomized from 1 to 3).
           content:
             application/json:
               schema:
@@ -392,13 +413,15 @@ paths:
         Changing keys on an items-only retry can create another order.
         The header is mandatory even when quote identity also prevents duplicate consumption.
         Order creation has a 10s overall deadline, a 2s lock timeout and a 5s statement timeout.
-        Timeout responses are 503 with Retry-After 1; retry with the same key and payload.
+        Timeout responses are 503 with Retry-After 1–3 seconds; retry with the same key and payload.
   "/api/v1/orders/{id}":
     parameters:
     - "$ref": "#/components/parameters/ID"
     get:
       summary: Retrieve an accessible order
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           "$ref": "#/components/responses/Order"
         '401':
@@ -431,6 +454,8 @@ paths:
                   - SHIPPED
                   - DELIVERED
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           "$ref": "#/components/responses/Order"
         '400':
@@ -454,6 +479,8 @@ paths:
         order without changing its timestamp. PROCESSING, SHIPPED and DELIVERED return
         409. Missing or another customer's order returns 404.
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '200':
           "$ref": "#/components/responses/Order"
         '401':
@@ -479,6 +506,8 @@ paths:
             schema:
               "$ref": "#/components/schemas/QuoteRequest"
       responses:
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '201':
           description: Quote
           content:
@@ -525,6 +554,17 @@ components:
         type: string
         format: uuid
   responses:
+    ServiceUnavailable:
+      description: Admission capacity exhausted, instance draining, deadline exceeded or selected transient database failure. Retry with backoff; order creation must reuse its key and payload.
+      headers:
+        Retry-After:
+          schema:
+            type: string
+          description: Suggested minimum delay in seconds (randomized from 1 to 3).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     Error:
       description: Error (see HTTP status)
       content:
@@ -871,6 +911,7 @@ components:
           enum:
           - ok
           - unavailable
+          - draining
         checks:
           type: object
           properties:
@@ -879,6 +920,7 @@ components:
               enum:
               - ok
               - unavailable
+              - not_checked
             worker:
               type: string
               enum:

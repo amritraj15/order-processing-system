@@ -14,6 +14,7 @@ func (*ValidationError) Error() string { return "validation failed" }
 
 var validate = func() *v.Validate {
 	validator := v.New(v.WithRequiredStructEnabled())
+	_ = validator.RegisterValidation("nonul", func(fl v.FieldLevel) bool { return !strings.ContainsRune(fl.Field().String(), 0) })
 	validator.RegisterTagNameFunc(func(f reflect.StructField) string { name, _, _ := strings.Cut(f.Tag.Get("json"), ","); return name })
 	return validator
 }()

@@ -16,8 +16,8 @@ type ProductHandler struct {
 	Currency string
 }
 type createProductRequest struct {
-	SKU        string `json:"sku" validate:"required,max=64"`
-	Name       string `json:"name" validate:"required,max=255"`
+	SKU        string `json:"sku" validate:"required,max=64,nonul"`
+	Name       string `json:"name" validate:"required,max=255,nonul"`
 	PriceMinor int64  `json:"price_minor" validate:"gt=0"`
 }
 type productResponse struct {

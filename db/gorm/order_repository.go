@@ -87,6 +87,9 @@ func (r *OrderRepository) Get(ctx context.Context, id uuid.UUID, customer *uuid.
 	return &o, nil
 }
 func (r *OrderRepository) List(ctx context.Context, filter order.Filter) (shared.Page[order.Order], error) {
+	if filter.Pagination.Limit < 1 || filter.Pagination.Limit > 100 {
+		return shared.Page[order.Order]{}, shared.ErrInvalid
+	}
 	query := scoped(r.DB.WithContext(ctx), filter.CustomerID)
 	if filter.Status != "" {
 		query = query.Where("status = ?", filter.Status)

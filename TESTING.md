@@ -377,3 +377,34 @@ DB, `make integration` additionally covers:
 These are transaction, reconnect and concurrency checks. They are not exhaustive
 OS-process crash injection, multi-host deployment or PostgreSQL failover tests.
 See [workflow recovery boundaries](architecture.md#crash-recovery-by-workflow-step).
+
+
+## Runtime limits and graceful shutdown
+
+`make test` includes admission before authentication, immediate overload rejection,
+probe bypass, request deadline/slot recovery, in-memory HTTP shutdown and forced
+cancellation, worker panic shutdown, SQLSTATE classification, safe logs, NUL text
+validation and repository pagination boundaries.
+
+With a dedicated PostgreSQL database, run the additional runtime checks:
+
+```bash
+go test -mod=readonly -count=1 -race -tags=integration \
+  -run 'TestPoolSaturationLeavesWorkerAndReadinessCapacity|TestRuntimeSQLTimeoutsAndConnectionReplacement' ./db/gorm
+go test -mod=readonly -count=1 -race -tags=integration \
+  -run TestSIGTERMAllowsInFlightResponse ./internal/bootstrap
+```
+
+The pool tests hold the API pool's connection, verify a waiting request reaches
+its deadline, exercise the independent worker/probe pools, and verify recovery.
+They also check statement/lock timeouts and settings on replacement connections.
+The SIGTERM test launches a child process using the production HTTP lifecycle,
+sends a real signal while a handler is active, and expects its response to complete
+before a clean exit. It requires local TCP sockets and process signaling. It tests
+HTTP draining; transaction atomicity and lost-response replay are covered separately
+by the order integration tests. These checks do not establish a load-test baseline.
+
+Before deployment, measure concurrent API traffic and worker load while recording
+latency, rejected requests, goroutines, pool waits and oldest PENDING age. Set the
+termination grace period above `HTTP_DRAIN_DELAY + HTTP_SHUTDOWN_TIMEOUT` with a
+margin. Keep generated output in ignored `.cache/` storage.

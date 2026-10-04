@@ -15,7 +15,7 @@ import (
 func (s *Service) HandleCreate(ctx context.Context, cmd CreateCommand) (*domain.Product, error) {
 	cmd.SKU = strings.TrimSpace(cmd.SKU)
 	cmd.Name = strings.TrimSpace(cmd.Name)
-	if cmd.SKU == "" || len(cmd.SKU) > 64 || cmd.Name == "" || len(cmd.Name) > 255 || cmd.PriceMinor <= 0 {
+	if cmd.SKU == "" || len(cmd.SKU) > 64 || cmd.Name == "" || len(cmd.Name) > 255 || cmd.PriceMinor <= 0 || strings.ContainsRune(cmd.SKU, 0) || strings.ContainsRune(cmd.Name, 0) {
 		return nil, fmt.Errorf("%w: invalid product", shared.ErrInvalid)
 	}
 	id, err := uuid.NewV7()

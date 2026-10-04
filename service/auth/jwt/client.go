@@ -49,7 +49,7 @@ func NewClient(cfg Config, repo user.Repository, denylist ports.TokenDenylist) (
 func (c *Client) Register(ctx context.Context, name, email, password string) (*ports.AuthSession, error) {
 	name = strings.TrimSpace(name)
 	email = strings.ToLower(strings.TrimSpace(email))
-	if name == "" {
+	if name == "" || strings.ContainsRune(name, 0) || strings.ContainsRune(email, 0) {
 		return nil, fmt.Errorf("%w: name is required", shared.ErrInvalid)
 	}
 	hash, err := user.HashPassword(password)

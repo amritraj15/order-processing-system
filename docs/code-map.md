@@ -26,7 +26,7 @@ health are supporting features beyond the five core requirements.
 
 ## Paths through the implementation
 
-All HTTP paths below pass through `routes.Mount`, authentication/role middleware
+All HTTP paths below pass through request admission/deadlines, `routes.Mount`, authentication/role middleware
 and the shared HTTP error handler. The worker path starts from bootstrap.
 
 | Requirement | Main function and method path | Where correctness is enforced |
@@ -70,15 +70,15 @@ Application entry point. `main` installs JSON logging and signal cancellation; `
 
 `Load` reads and validates database, HTTP, JWT, currency, quote, limiter and worker settings. The processing interval defaults to five minutes and batch size to 500. `value` supplies environment defaults.
 
-**Functions and methods:** [value](../configs/config.go#L21), [Load](../configs/config.go#L27).
+**Functions and methods:** [value](../configs/config.go#L29), [Load](../configs/config.go#L35).
 
 ### [internal/bootstrap/server.go](../internal/bootstrap/server.go)
 
 **Mapping:** All; operations.
 
-`RunServer` constructs repositories, services, HTTP routes, auth limits and the worker; starts HTTP/worker goroutines and coordinates shutdown. Its readiness callback checks migrations and catalog settings; maintenance purges expired tokens and eligible quotes. `Catalog` initializes or validates the immutable catalog denomination.
+`RunServer` constructs separate API/worker/readiness pools, repositories, services, HTTP routes, request/auth limits and the worker, then delegates execution to `serve`. `poolConfig` applies configured limits. Its readiness callback checks migrations and catalog settings; maintenance purges expired tokens and eligible quotes. `Catalog` initializes or validates the immutable catalog denomination.
 
-**Functions and methods:** [RunServer](../internal/bootstrap/server.go#L30), [Catalog](../internal/bootstrap/server.go#L115).
+**Functions and methods:** [RunServer](../internal/bootstrap/server.go#L29), [poolConfig](../internal/bootstrap/server.go#L108), [Catalog](../internal/bootstrap/server.go#L116).
 
 ### [internal/clock/clock.go](../internal/clock/clock.go)
 
@@ -104,7 +104,7 @@ Application entry point. `main` installs JSON logging and signal cancellation; `
 
 `jsonBinder.Bind` enforces JSON content type, bounded bodies, known fields, one JSON value and validation tags. `NewServer` installs request IDs, safe request logging, recovery and error translation: malformed input 400, validation 422, conflict 409, missing resource 404 and retryable timeout 503.
 
-**Functions and methods:** [jsonBinder.Bind](../api/rest/server.go#L28), [NewServer](../api/rest/server.go#L44).
+**Functions and methods:** [NewServer](../api/rest/server.go#L46).
 
 ### [api/rest/routes/routes.go](../api/rest/routes/routes.go)
 
@@ -112,7 +112,7 @@ Application entry point. `main` installs JSON logging and signal cancellation; `
 
 `Mount` registers order, product, quote and auth endpoints with authentication/role middleware. Health reports liveness; readiness combines database and worker state. `optionalTime` represents absent worker observations as null.
 
-**Functions and methods:** [Mount](../api/rest/routes/routes.go#L28), [optionalTime](../api/rest/routes/routes.go#L81).
+**Functions and methods:** [Mount](../api/rest/routes/routes.go#L29), [optionalTime](../api/rest/routes/routes.go#L88).
 
 ### [api/rest/middleware/auth.go](../api/rest/middleware/auth.go)
 
@@ -168,7 +168,7 @@ Application entry point. `main` installs JSON logging and signal cancellation; `
 
 `Struct` converts validation-library failures into a structured field-error map. `ValidationError.Error` identifies this class of error for the central HTTP handler.
 
-**Functions and methods:** [ValidationError.Error](../api/validator/validator.go#L13), [Struct](../api/validator/validator.go#L21).
+**Functions and methods:** [Struct](../api/validator/validator.go#L22).
 
 ## Domain models and rules
 
@@ -370,7 +370,7 @@ Defines CreateCommand with SKU, name and minor-unit price. Contains no methods.
 
 `Run` waits for periodic ticks, starts one drain at a time per process, tracks health and invokes maintenance. `Drain` repeatedly calls ProcessBatch until empty/error/cancellation and logs count/outcome. `now` uses the injected clock. This is a loop over SQL batches, not individual orders.
 
-**Functions and methods:** [Worker.Run](../service/processing/worker.go#L25), [Worker.Drain](../service/processing/worker.go#L54), [Worker.now](../service/processing/worker.go#L82).
+**Functions and methods:** [Worker.Run](../service/processing/worker.go#L26), [Worker.Drain](../service/processing/worker.go#L55), [Worker.now](../service/processing/worker.go#L84).
 
 ### [service/processing/status.go](../service/processing/status.go)
 
@@ -386,9 +386,9 @@ Defines CreateCommand with SKU, name and minor-unit price. Contains no methods.
 
 **Mapping:** All; database operations.
 
-`Open` configures GORM/PostgreSQL, connection limits and a connection check. `Migrate` runs embedded migrations up or one version down. `mapError` translates storage failures into shared errors for HTTP/service handling.
+`Open` uses default connection limits; `OpenWithPool`, `DefaultPoolConfig` and `connectionConfig` configure independent PostgreSQL pools, startup SQL timeouts, idle lifetime and a bounded connection check. `Migrate` runs embedded migrations up or one version down. `mapError` and `transientSQLState` translate selected transient storage failures into shared errors while preserving cancellation and diagnostic SQLSTATEs.
 
-**Functions and methods:** [Open](../db/gorm/db.go#L20), [Migrate](../db/gorm/db.go#L40), [mapError](../db/gorm/db.go#L67).
+**Functions and methods:** [DefaultPoolConfig](../db/gorm/db.go#L31), [Open](../db/gorm/db.go#L37), [OpenWithPool](../db/gorm/db.go#L41), [connectionConfig](../db/gorm/db.go#L66), [Migrate](../db/gorm/db.go#L87), [mapError](../db/gorm/db.go#L114), [transientSQLState](../db/gorm/db.go#L137).
 
 ### [db/gorm/order_repository.go](../db/gorm/order_repository.go)
 
@@ -396,7 +396,7 @@ Defines CreateCommand with SKU, name and minor-unit price. Contains no methods.
 
 `Insert` stores order/items; `Get` loads an owned order plus snapshots; `List` applies filters/cursors and bulk-loads items. `Transition` performs an expected-status conditional update in a transaction and permits already-CANCELLED retries. `ProcessBatch` executes PendingBatchSQL using LIMIT and FOR UPDATE SKIP LOCKED. `FindByQuote` supports replay. `UnitOfWork.Do` uses READ COMMITTED; repository accessors share its transaction, and `Now` reads DB time. Row converters, table names and `scoped` support these operations.
 
-**Functions and methods:** [orderRow.TableName](../db/gorm/order_repository.go#L32), [itemRow.TableName](../db/gorm/order_repository.go#L43), [orderFrom](../db/gorm/order_repository.go#L44), [itemFrom](../db/gorm/order_repository.go#L47), [OrderRepository.Insert](../db/gorm/order_repository.go#L53), [scoped](../db/gorm/order_repository.go#L67), [OrderRepository.Get](../db/gorm/order_repository.go#L73), [OrderRepository.List](../db/gorm/order_repository.go#L89), [OrderRepository.Transition](../db/gorm/order_repository.go#L123), [OrderRepository.ProcessBatch](../db/gorm/order_repository.go#L162), [repositories.Orders](../db/gorm/order_repository.go#L174), [repositories.Products](../db/gorm/order_repository.go#L175), [UnitOfWork.Do](../db/gorm/order_repository.go#L176), [OrderRepository.FindByQuote](../db/gorm/order_repository.go#L187), [repositories.Pricing](../db/gorm/order_repository.go#L194), [repositories.Quotes](../db/gorm/order_repository.go#L195), [repositories.Now](../db/gorm/order_repository.go#L196).
+**Functions and methods:** [orderFrom](../db/gorm/order_repository.go#L44), [itemFrom](../db/gorm/order_repository.go#L47), [OrderRepository.Insert](../db/gorm/order_repository.go#L53), [scoped](../db/gorm/order_repository.go#L67), [OrderRepository.Get](../db/gorm/order_repository.go#L73), [OrderRepository.List](../db/gorm/order_repository.go#L89), [OrderRepository.Transition](../db/gorm/order_repository.go#L126), [OrderRepository.ProcessBatch](../db/gorm/order_repository.go#L165), [repositories.Orders](../db/gorm/order_repository.go#L177), [repositories.Products](../db/gorm/order_repository.go#L178), [UnitOfWork.Do](../db/gorm/order_repository.go#L179), [OrderRepository.FindByQuote](../db/gorm/order_repository.go#L190), [repositories.Pricing](../db/gorm/order_repository.go#L197), [repositories.Quotes](../db/gorm/order_repository.go#L198), [repositories.Now](../db/gorm/order_repository.go#L199).
 
 ### [db/gorm/product_repository.go](../db/gorm/product_repository.go)
 
@@ -404,7 +404,7 @@ Defines CreateCommand with SKU, name and minor-unit price. Contains no methods.
 
 `Insert`, `Get`, `GetMany` and `List` implement catalog persistence and bulk lookup. `pageQuery` applies cursor/limit ordering and is also used by order listing. `productFrom` maps database rows into domain products; TableName fixes the table mapping.
 
-**Functions and methods:** [productRow.TableName](../db/gorm/product_repository.go#L21), [productFrom](../db/gorm/product_repository.go#L22), [ProductRepository.Insert](../db/gorm/product_repository.go#L28), [ProductRepository.Get](../db/gorm/product_repository.go#L34), [ProductRepository.GetMany](../db/gorm/product_repository.go#L40), [pageQuery](../db/gorm/product_repository.go#L49), [ProductRepository.List](../db/gorm/product_repository.go#L55).
+**Functions and methods:** [productFrom](../db/gorm/product_repository.go#L22), [ProductRepository.Insert](../db/gorm/product_repository.go#L28), [ProductRepository.Get](../db/gorm/product_repository.go#L34), [ProductRepository.GetMany](../db/gorm/product_repository.go#L40), [pageQuery](../db/gorm/product_repository.go#L49), [ProductRepository.List](../db/gorm/product_repository.go#L55).
 
 ### [db/gorm/user_repository.go](../db/gorm/user_repository.go)
 
@@ -478,7 +478,7 @@ Checks bounded limiter storage, concurrent admission, forwarded-header handling 
 
 Checks that worker failure makes readiness unavailable even when the database check succeeds.
 
-**Functions and methods:** [TestReadinessReportsWorkerFailureWithHealthyDatabase](../api/rest/routes/readiness_test.go#L17).
+**Functions and methods:** [TestReadinessReportsWorkerFailureWithHealthyDatabase](../api/rest/routes/readiness_test.go#L17), [TestDrainingReadinessSkipsDatabaseAndPreservesEnvelope](../api/rest/routes/readiness_test.go#L38).
 
 ### [api/rest/routes/routes_integration_test.go](../api/rest/routes/routes_integration_test.go)
 
@@ -494,7 +494,7 @@ Exercises the HTTP/PostgreSQL lifecycle: roles, ownership, products, orders, sta
 
 Checks strict JSON binding, field validation and safe error envelopes, retryable timeout responses and request-log redaction.
 
-**Functions and methods:** [TestJSONBinderAndErrorEnvelope](../api/rest/server_test.go#L17), [TestRetryableTimeoutResponse](../api/rest/server_test.go#L55), [TestRequestLogsDoNotExposeBodyOrErrors](../api/rest/server_test.go#L73).
+**Functions and methods:** [TestJSONBinderAndErrorEnvelope](../api/rest/server_test.go#L18), [TestRetryableTimeoutResponse](../api/rest/server_test.go#L56), [TestRequestLogsDoNotExposeBodyOrErrors](../api/rest/server_test.go#L75), [TestPanicDiagnosticsAndCallerCancellation](../api/rest/server_test.go#L94).
 
 ### [api/rest/v1/order_handler_test.go](../api/rest/v1/order_handler_test.go)
 
@@ -510,7 +510,7 @@ Checks malformed/missing/nil UUID rejection with normal and decoding-only binder
 
 Checks configuration defaults and invalid currency, token TTL, interval, batch size, region, quote TTL and auth-limit settings.
 
-**Functions and methods:** [TestLoadDefaultsAndValidation](../configs/config_test.go#L5), [TestHardeningConfiguration](../configs/config_test.go#L27).
+**Functions and methods:** [TestLoadDefaultsAndValidation](../configs/config_test.go#L8), [TestHardeningConfiguration](../configs/config_test.go#L30), [TestRuntimeLimits](../configs/config_test.go#L48).
 
 ### [db/gorm/idempotency_integration_test.go](../db/gorm/idempotency_integration_test.go)
 
@@ -598,7 +598,7 @@ Checks that request and actor context survive adding logger attributes.
 
 Uses fake users and denylist to exercise registration, login, session, logout, invalid tokens, current roles, missing accounts and inactive accounts.
 
-**Functions and methods:** [usersFake.Insert](../service/auth/jwt/client_test.go#L20), [usersFake.Get](../service/auth/jwt/client_test.go#L29), [usersFake.GetByEmail](../service/auth/jwt/client_test.go#L35), [denylistFake.Add](../service/auth/jwt/client_test.go#L49), [denylistFake.Exists](../service/auth/jwt/client_test.go#L53), [newFixture](../service/auth/jwt/client_test.go#L60), [TestRegisterLoginSessionLogout](../service/auth/jwt/client_test.go#L70), [TestRejectsInvalidJWTAndChecksCurrentRole](../service/auth/jwt/client_test.go#L116), [TestLoginVerifiesMissingAndInactiveAccounts](../service/auth/jwt/client_test.go#L163).
+**Functions and methods:** [usersFake.Insert](../service/auth/jwt/client_test.go#L20), [usersFake.Get](../service/auth/jwt/client_test.go#L29), [usersFake.GetByEmail](../service/auth/jwt/client_test.go#L35), [denylistFake.Add](../service/auth/jwt/client_test.go#L49), [denylistFake.Exists](../service/auth/jwt/client_test.go#L53), [newFixture](../service/auth/jwt/client_test.go#L60), [TestRegisterLoginSessionLogout](../service/auth/jwt/client_test.go#L70), [TestRejectsInvalidJWTAndChecksCurrentRole](../service/auth/jwt/client_test.go#L116), [TestLoginVerifiesMissingAndInactiveAccounts](../service/auth/jwt/client_test.go#L163), [TestRegistrationRejectsNULBeforeHashingOrPersistence](../service/auth/jwt/client_test.go#L191).
 
 ### [service/order/place_handler_test.go](../service/order/place_handler_test.go)
 
@@ -871,3 +871,93 @@ Explains each application table and column, important constraints and indexes, a
 **Mapping:** All; example walkthrough.
 
 Follows three customers and five multi-item orders through creation, retries, quotes, cancellation, processing, delivery and cleanup. Shows table reads/writes and final row counts. It contains no runtime methods.
+
+## Runtime safeguards and related tests
+
+### [internal/bootstrap/lifecycle.go](../internal/bootstrap/lifecycle.go)
+
+**Mapping:** All; operations.
+
+`serve` opens the listener; `serveListener` separates request, worker and signal lifetimes, marks draining, stops the worker and bounds HTTP shutdown. `guardedWorker` sanitizes panic diagnostics and initiates controlled shutdown.
+
+**Functions and methods:** [serve](../internal/bootstrap/lifecycle.go#L18), [serveListener](../internal/bootstrap/lifecycle.go#L30), [guardedWorker](../internal/bootstrap/lifecycle.go#L83).
+
+### [api/rest/middleware/request_limits.go](../api/rest/middleware/request_limits.go)
+
+**Mapping:** All; request bounds.
+
+`NewRequestLimits` creates a finite admission gate and context budget. `Middleware` runs before authentication, rejects excess work without queuing, and bypasses probe routes. `Drain` and `Draining` coordinate shutdown admission/readiness.
+
+**Functions and methods:** [NewRequestLimits](../api/rest/middleware/request_limits.go#L21), [RequestLimits.Drain](../api/rest/middleware/request_limits.go#L27), [RequestLimits.Draining](../api/rest/middleware/request_limits.go#L28), [RequestLimits.Middleware](../api/rest/middleware/request_limits.go#L30).
+
+### [internal/logging/errors.go](../internal/logging/errors.go)
+
+**Mapping:** All; diagnostics.
+
+`ErrorAttrs` exposes only category/type and validated SQLSTATE. `StackFrames` records function/file/line without panic values or argument contents.
+
+**Functions and methods:** [ErrorAttrs](../internal/logging/errors.go#L14), [StackFrames](../internal/logging/errors.go#L45).
+
+### [api/rest/middleware/request_limits_test.go](../api/rest/middleware/request_limits_test.go)
+
+**Mapping:** All; runtime tests.
+
+Tests admission before authentication, probe bypass, draining, deadline coverage and slot release after timeouts/panics.
+
+**Functions and methods:** [TestAdmissionPrecedesAuthenticationAndProbesBypassIt](../api/rest/middleware/request_limits_test.go#L20), [TestRequestBudgetIncludesAuthenticationAndReleasesSlot](../api/rest/middleware/request_limits_test.go#L65), [TestPanicReleasesAdmissionSlot](../api/rest/middleware/request_limits_test.go#L85).
+
+### [api/rest/v1/text_validation_test.go](../api/rest/v1/text_validation_test.go)
+
+**Mapping:** R1 support; input validation.
+
+Checks stored product and registration text rejects NUL with 422 before invoking services.
+
+**Functions and methods:** [TestStoredTextRejectsNUL](../api/rest/v1/text_validation_test.go#L12).
+
+### [db/gorm/runtime_test.go](../db/gorm/runtime_test.go)
+
+**Mapping:** All; persistence bounds.
+
+Checks URL/keyword DSN timeout configuration, selected SQLSTATE mappings and repository pagination rejection before database access.
+
+**Functions and methods:** [TestConnectionLimitsAndDSNForms](../db/gorm/runtime_test.go#L14), [TestDatabaseErrorClassification](../db/gorm/runtime_test.go#L30), [TestRepositoriesRejectInvalidPaginationBeforeDatabaseAccess](../db/gorm/runtime_test.go#L46).
+
+### [db/gorm/runtime_limits_integration_test.go](../db/gorm/runtime_limits_integration_test.go)
+
+**Mapping:** All; PostgreSQL isolation and timeouts.
+
+Holds the API connection to test bounded waits, independent readiness/worker capacity, recovery, session limits and replacement-connection settings.
+
+**Functions and methods:** [runtimePool](../db/gorm/runtime_limits_integration_test.go#L18), [TestPoolSaturationLeavesWorkerAndReadinessCapacity](../db/gorm/runtime_limits_integration_test.go#L43), [TestRuntimeSQLTimeoutsAndConnectionReplacement](../db/gorm/runtime_limits_integration_test.go#L84).
+
+### [internal/bootstrap/lifecycle_test.go](../internal/bootstrap/lifecycle_test.go)
+
+**Mapping:** All; shutdown and worker failure.
+
+Uses an in-memory network listener to test request draining, forced cancellation and controlled shutdown following a worker panic.
+
+**Functions and methods:** [pipeListener.Accept](../internal/bootstrap/lifecycle_test.go#L27), [pipeListener.Close](../internal/bootstrap/lifecycle_test.go#L35), [pipeListener.Addr](../internal/bootstrap/lifecycle_test.go#L36), [pipeListener.dial](../internal/bootstrap/lifecycle_test.go#L37), [awaitDraining](../internal/bootstrap/lifecycle_test.go#L52), [TestShutdownDrainsAcceptedRequests](../internal/bootstrap/lifecycle_test.go#L64), [TestShutdownDeadlineCancelsStalledRequest](../internal/bootstrap/lifecycle_test.go#L131), [TestWorkerPanicInitiatesControlledShutdown](../internal/bootstrap/lifecycle_test.go#L170).
+
+### [internal/bootstrap/lifecycle_integration_test.go](../internal/bootstrap/lifecycle_integration_test.go)
+
+**Mapping:** All; process lifecycle.
+
+Runs the production HTTP lifecycle in a child process and sends SIGTERM while a handler is active, checking successful response completion and process exit.
+
+**Functions and methods:** [TestSignalServerHelper](../internal/bootstrap/lifecycle_integration_test.go#L26), [TestSIGTERMAllowsInFlightResponse](../internal/bootstrap/lifecycle_integration_test.go#L54).
+
+### [internal/logging/errors_test.go](../internal/logging/errors_test.go)
+
+**Mapping:** All; safe diagnostics.
+
+Checks SQLSTATE remains visible while wrapped messages and invalid SQLSTATE contents remain private.
+
+**Functions and methods:** [TestSafeErrorDiagnostics](../internal/logging/errors_test.go#L11).
+
+### [service/product/command_handler_test.go](../service/product/command_handler_test.go)
+
+**Mapping:** R1 support; catalog validation.
+
+Checks service-level SKU/name NUL rejection before persistence, including callers outside HTTP.
+
+**Functions and methods:** [TestProductRejectsNULBeforePersistence](../service/product/command_handler_test.go#L10).

@@ -93,7 +93,7 @@ flowchart LR
 
 The deployment in [Compose](docker-compose.yml) starts PostgreSQL, runs the
 migration command, then starts the API after migrations succeed. API and worker
-share a process and connection pool. The database stores orders, catalog, users,
+share a process with separate API, worker/maintenance and readiness connection pools. The database stores orders, catalog, users,
 token revocations, rates and quotes. The CLI is another invocation of the same
 binary, used for privileged setup and maintenance.
 
@@ -406,16 +406,21 @@ across multiple individually successful statements. Context cancellation asks th
 driver to cancel/roll back; a broken network may delay server-side cleanup, so these
 are execution budgets, not a strict response-time guarantee.
 
-PostgreSQL lock/statement cancellation and context deadline failures produce a
-safe 503 with `Retry-After: 1`. SQLSTATE 57014 covers query cancellation more
-broadly than statement timeout, including cancellation after a client disconnect.
-In that case the 503 may have no receiver; distinguish caller cancellation from
-server timeout when adding error metrics to avoid overstating server failures. Clients retry with backoff using the original key
-and payload; a timeout near commit can have an ambiguous outcome. Timeout tests
-check rollback and successful retry after releasing the blocking condition.
-These limits reduce stalls in the 20-connection pool per instance but cannot
-prevent saturation by many simultaneous callers. Admission controls, pool-wait
-metrics and load tests remain future work. Other endpoints do not acquire these order-create SQL limits.
+PostgreSQL lock/statement timeouts, selected transient SQLSTATE failures and context
+deadlines produce a safe 503 with a randomized `Retry-After` of 1–3 seconds.
+Caller cancellation is distinguished from a server deadline and recorded as 499
+without an ERROR log; a disconnected client normally receives no response.
+Clients retry with backoff and jitter using the original key and payload; a timeout
+near commit can have an ambiguous outcome. There is no automatic application
+transaction retry loop. Timeout tests check rollback and recovery after contention.
+
+A request context budget starts before authentication (10 seconds by default),
+and fail-fast admission limits business requests to 16 per instance. Probes bypass
+admission. The default separate API/worker/readiness pools allow 16/3/1 connections;
+all application connections have SQL timeouts. Order creation additionally uses
+its existing transaction-local limits. Configuring a shorter HTTP budget also
+shortens the available order-creation time. Pool-wait metrics and load tests remain
+future work; these limits do not establish production throughput.
 
 Indefinite retention grows storage; enabling the proposed bounded retention or a
 maximum keys-per-order policy requires an explicit contract. The down migration
@@ -716,16 +721,40 @@ the socket peer, ignore forwarded headers, and can therefore group clients behin
 a proxy. They are process-local and multiply across replicas. Shared ingress
 limits and a deliberate proxy trust policy are needed for a distributed deployment.
 
-HTTP server timeouts are 5s for headers, 15s read, 30s write and 60s idle. DB startup
-ping has a 5s deadline; readiness has 2s. The worker run has one interval and
-maintenance up to 30s. Shutdown cancels the shared service context and allows up
-to 10s for HTTP shutdown/worker completion, so in-flight DB work may be cancelled.
-HTTP socket timeouts do not establish a general database statement deadline;
-order creation has a 10s context budget and transaction-local 2s lock/5s
-statement limits. General deadlines for other requests remain future work.
+HTTP socket timeouts are 5s for headers, 15s read, request budget plus 5s for
+writes (15s by default), and 60s idle. A separate context deadline begins before
+authentication, with fail-fast request admission and no admission waiting queue.
+Context deadlines are cooperative: they cancel SQL/pool waits, but do not interrupt
+bcrypt CPU work or independently unblock body reads; auth slots and socket read
+deadlines bound those separately.
+
+Database connections use configurable connect (5s), statement (5s), lock (2s), and
+idle-in-transaction (10s) limits. Connection startup applies the SQL limits to every
+replacement connection for both URL and keyword DSNs. Migrations use their separate
+runner and are not subject to these application-pool settings. Order creation also
+sets transaction-local 2s lock/5s statement limits. Readiness has a 2s context budget;
+the worker drain has one interval and maintenance up to 30s. The minimum configured
+processing interval is 1s, preserving 5s smoke and 5m assignment schedules.
+
+SIGTERM marks readiness as draining and rejects new business work. HTTP request
+contexts remain live during an optional load-balancer deregistration delay and
+bounded HTTP shutdown (30s by default). Worker cancellation is independent. If the
+shutdown deadline expires, remaining request contexts are canceled and connections
+are closed. The orchestrator grace period must exceed deregistration delay plus
+shutdown timeout with a margin; Compose defaults to 65s. Worker panics log sanitized
+frames and trigger the same controlled shutdown, rather than silently restarting.
+
+Error diagnostics include route/operation, type and an allowlisted-format SQLSTATE.
+Panic logs include function/file/line frames without argument values or panic text.
+Raw database messages, request bodies and credentials are excluded. Selected
+connection, deadlock, serialization, connection-limit and shutdown SQLSTATEs map to
+503. Other database failures remain generic 500; whole error classes are not mapped
+to 422 or declared retryable. NUL in product SKU/name and registration name is
+rejected before persistence. Order and product repositories validate pagination.
 
 Liveness says the process responds. Readiness additionally verifies schema version
-5, a clean migration state, initialized catalog settings and local worker health.
+5, a clean migration state, initialized catalog settings and local worker health;
+draining fails readiness before a database query.
 The worker has two intervals of startup grace; a failed run is unhealthy immediately,
 a success older than two intervals is stale, and an active attempt lasting one
 interval is stale. Successful empty runs restore health. Maintenance cleanup errors
@@ -830,9 +859,10 @@ moving the same ticker into several dedicated worker replicas retains the issue.
 ### What already bounds work
 
 The application limits request bodies, items per order, page size, auth concurrency,
-auth limiter keys, worker batch size and quote cleanup. The DB pool is currently
-hard-coded to 20 open / 5 idle connections per process, with a 30-minute lifetime.
-HTTP and worker share that pool. The partial pending index keeps historical
+auth limiter keys, worker batch size and quote cleanup. Request admission is bounded
+at 16 business requests by default. Separate API/worker/readiness pools default to
+16/3/1 open connections, each retaining at most `min(5, max_open)` idle connections,
+with a 30-minute lifetime and configurable idle age (5m). The partial pending index keeps historical
 non-PENDING orders out of the queue lookup. Batch size bounds the number of rows
 updated, but does not necessarily bound the rows scanned by the update's join.
 
@@ -869,7 +899,7 @@ the five-minute interval is not a proven five-minute end-to-end SLA.
 | --- | --- | --- |
 | 1 — Establish a working baseline | Local acceptance and a five-minute scheduler run were performed by the author; the scheduler run is recorded in the [demo note](docs/reviews/order-processing-hardening/verification/native-five-minute-demo/README.md). Next, measure one API/worker process and PostgreSQL with representative carts/history and pending backlogs. | API p50/p95/p99 latency, errors, order throughput, DB pool waits, query plans, locks, CPU/I/O and oldest pending age. No load-test baseline numbers are available yet. |
 | 2 — Tune the current deployment | Tune DB resources, indexes/query plans and processing batch size; make connection limits configurable if needed. | Confirm that throughput improves without making API latency or lock waits unacceptable. More goroutines alone cannot increase DB capacity. |
-| 3 — Add API replicas | Use a load balancer and shared primary database; consistent JWT/region settings, readiness routing and global ingress limits. | Budget up to `20 × replica_count` application connections with room for migrations/admin/monitoring; load and revocation consistency tests. A different deployment configuration is required. |
+| 3 — Add API replicas | Use a load balancer and shared primary database; consistent JWT/region settings, readiness routing and global ingress limits. | Budget `(DB_API_MAX_OPEN + DB_WORKER_MAX_OPEN + DB_READINESS_MAX_OPEN) × replica_count` application connections (20 per replica by default) with room for migrations/admin/monitoring; load and revocation consistency tests. A different deployment configuration is required. |
 | 4 — Separate scheduling/work capacity | Add independent API/worker modes and a dedicated scheduler or coordinated schedule if global cadence matters. | Failure/restart tests and a clearly defined timing contract. Do not merely add a worker: the current API always embeds one, so it must be disabled/extracted as part of this change. |
 | 5 — Add database resilience / read capacity | Provision backups, restore drills, HA/failover; consider reporting replicas once stale-read semantics are acceptable. | Recovery objectives, failover tests and replica-lag behavior. Keep correctness-sensitive order/auth reads on the primary unless their consistency policy changes. |
 | 6 — Add asynchronous integrations when required | Transactional outbox → broker → idempotent consumers for notifications or fulfillment. | Publish/retry/deduplication/reconciliation tests, versioned events, dead-letter handling and operational ownership. These components are not implemented. |
@@ -895,6 +925,7 @@ The following matrix explains the architectural risks covered by those tests.
 | --- | --- |
 | Order domain | Multiple item snapshots, exact total 3495, UUIDv7/time values, empty/unknown/duplicate items, zero/negative quantities, line/aggregate overflow, permitted predecessor mapping. [Tests](domain/order/order_test.go). |
 | Money and quote use case | Identity conversion, JPY/KWD precision, half-even ties, invalid rates/overflow; quote snapshot, TTL cap, foreign owner, expired quote, missing rate, replay after cleanup. [Money](domain/money/money_test.go), [quote service](service/quote/service_test.go). |
+| Runtime bounds and shutdown | Admission before auth, probe bypass, deadlines and slot recovery, HTTP drain/forced cancellation, worker panic shutdown, SQLSTATE/redaction and NUL validation. [Lifecycle tests](internal/bootstrap/lifecycle_test.go), [admission tests](api/rest/middleware/request_limits_test.go). Real-process SIGTERM and PostgreSQL pool isolation/timeouts are integration tests. [Signal test](internal/bootstrap/lifecycle_integration_test.go), [pool tests](db/gorm/runtime_limits_integration_test.go). |
 | Worker/configuration/health state | Full/short/empty batches, cancellation/failure, no work before initial tick in the tested cancellation case, two real short-interval ticker events and shutdown, health boundaries/recovery, concurrent health reads, configuration bounds. [Worker tests](service/processing/worker_test.go), [status](service/processing/status_test.go), [config](configs/config_test.go). |
 | Auth and HTTP boundary | Registration/login/logout, invalid JWT/current role, inactive/missing-user verification, password bounds, limiter capacity/concurrency/forwarded-header behavior, JSON/content-type errors and log redaction. [JWT](service/auth/jwt/client_test.go), [middleware](api/rest/middleware/rate_limit_test.go), [server](api/rest/server_test.go). |
 | Request UUID guards | Malformed/missing/nil product IDs and malformed/nil quote IDs return 422 with both the production binder and a decoding-only binder, before service access. [Handler tests](api/rest/v1/order_handler_test.go). |

@@ -34,3 +34,13 @@ func TestReadinessReportsWorkerFailureWithHealthyDatabase(t *testing.T) {
 	status.Finish(time.Now(), nil)
 	check(200, `"worker":"ok"`)
 }
+
+func TestDrainingReadinessSkipsDatabaseAndPreservesEnvelope(t *testing.T) {
+	e := rest.NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	routes.Mount(e, routes.MountConfig{Draining: func() bool { return true }, Readiness: func(context.Context) error { t.Error("draining probe queried database"); return nil }})
+	r := httptest.NewRecorder()
+	e.ServeHTTP(r, httptest.NewRequest("GET", "/api/v1/ready", nil))
+	if r.Code != 503 || !strings.Contains(r.Body.String(), `"status":"draining"`) || !strings.Contains(r.Body.String(), `"database":"not_checked"`) || !strings.Contains(r.Body.String(), `"last_attempt_at"`) {
+		t.Fatalf("draining response: %d %s", r.Code, r.Body)
+	}
+}

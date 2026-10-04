@@ -53,6 +53,9 @@ func pageQuery(db *orm.DB, p shared.Pagination) *orm.DB {
 	return db.Order("id DESC").Limit(p.Limit + 1)
 }
 func (r *ProductRepository) List(ctx context.Context, p shared.Pagination) (shared.Page[product.Product], error) {
+	if p.Limit < 1 || p.Limit > 100 {
+		return shared.Page[product.Product]{}, shared.ErrInvalid
+	}
 	var rows []productRow
 	err := pageQuery(r.DB.WithContext(ctx), p).Find(&rows).Error
 	result := shared.Page[product.Product]{Items: make([]product.Product, 0, len(rows))}

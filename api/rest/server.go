@@ -7,9 +7,11 @@ import (
 	"github.com/google/uuid"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"mime"
 	"net/http"
 	"order_management/internal/logging"
+	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v5"
@@ -66,6 +68,7 @@ func NewServer(logger *slog.Logger) *echo.Echo {
 		return func(c *echo.Context) (err error) {
 			defer func() {
 				if recovered := recover(); recovered != nil {
+					logger.ErrorContext(c.Request().Context(), "request panic", "operation", c.Path(), "stack", logging.StackFrames())
 					err = echo.NewHTTPError(500, "internal server error")
 				}
 			}()
@@ -81,11 +84,16 @@ func NewServer(logger *slog.Logger) *echo.Echo {
 		var validation *validator.ValidationError
 		var httpErr *echo.HTTPError
 		var statusCoder echo.HTTPStatusCoder
-		retryableTimeout := errors.Is(err, shared.ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
+		retryableFailure := errors.Is(err, shared.ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
 		switch {
-		case retryableTimeout:
+		case errors.Is(err, context.Canceled):
+			// 499 distinguishes caller cancellation; disconnected callers receive nothing.
+			logger.DebugContext(c.Request().Context(), "request canceled", "operation", c.Path())
+			_ = c.JSON(499, APIError{Error: "request canceled"})
+			return
+		case retryableFailure:
 			code = 503
-			c.Response().Header().Set("Retry-After", "1")
+			c.Response().Header().Set("Retry-After", strconv.Itoa(1+rand.IntN(3)))
 		case errors.Is(err, shared.ErrIdempotencyConflict):
 			code = 409
 			response = APIError{Error: "idempotency key reused with different payload", Details: map[string]string{"reason": "idempotency_key_conflict"}}
@@ -125,9 +133,14 @@ func NewServer(logger *slog.Logger) *echo.Echo {
 			response.Error = http.StatusText(code)
 		}
 		if code >= 500 {
-			logger.ErrorContext(c.Request().Context(), "request failed", "error_kind", "internal")
+			attrs := append(logging.ErrorAttrs(err), "operation", c.Path())
+			if retryableFailure {
+				logger.WarnContext(c.Request().Context(), "request unavailable", attrs...)
+			} else {
+				logger.ErrorContext(c.Request().Context(), "request failed", attrs...)
+			}
 			response.Error = "internal server error"
-			if retryableTimeout {
+			if retryableFailure {
 				response.Error = "temporarily unavailable"
 			}
 		}

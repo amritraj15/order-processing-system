@@ -9,12 +9,12 @@ import (
 
 type AuthHandler struct{ Auth ports.Authenticator }
 type registerRequest struct {
-	Name     string `json:"name" validate:"required,min=2,max=64"`
-	Email    string `json:"email" validate:"required,email,max=255"`
+	Name     string `json:"name" validate:"required,min=2,max=64,nonul"`
+	Email    string `json:"email" validate:"required,email,max=255,nonul"`
 	Password string `json:"password" validate:"required,min=8,max=72"`
 }
 type loginRequest struct {
-	Email    string `json:"email" validate:"required,email,max=255"`
+	Email    string `json:"email" validate:"required,email,max=255,nonul"`
 	Password string `json:"password" validate:"required,max=72"`
 }
 

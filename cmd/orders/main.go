@@ -31,7 +31,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := run(ctx, os.Args[1:], logger); err != nil {
-		logger.ErrorContext(ctx, "command failed", "error_kind", "command")
+		logger.ErrorContext(ctx, "command failed", append(logging.ErrorAttrs(err), "operation", "command")...)
 		fmt.Fprintln(os.Stderr, safeCommandError(err))
 		os.Exit(1)
 	}
@@ -91,7 +91,7 @@ func run(ctx context.Context, args []string, logger *slog.Logger) error {
 			*email = strings.ToLower(strings.TrimSpace(*email))
 			*name = strings.TrimSpace(*name)
 			address, err := mail.ParseAddress(*email)
-			if err != nil || address.Address != *email || len(*email) > 255 || len(*name) < 2 || len(*name) > 64 {
+			if err != nil || address.Address != *email || len(*email) > 255 || len(*name) < 2 || len(*name) > 64 || strings.ContainsRune(*name, 0) {
 				return errors.New("valid email and name (2–64 bytes) required")
 			}
 			hash, err := user.HashPassword(os.Getenv("ADMIN_PASSWORD"))

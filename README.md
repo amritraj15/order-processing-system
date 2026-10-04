@@ -49,7 +49,7 @@ work beyond that scope.
 | Status history | Orders store their current status and update time; structured logs describe committed mutations. | There is no durable history of every transition. If required, record previous/new status, actor, reason and time in the same transaction as each change. |
 | Scheduling | Each API instance runs a worker at a configurable interval, defaulting to five minutes. Conditional updates and `SKIP LOCKED` batches coordinate concurrent processing. | Replicas have independent tick schedules. A single deployment-wide cadence would require a dedicated scheduler or leader coordination. |
 | Commerce workflows | Orders validate catalog products and snapshot quantities and prices. | Stock reservation, payments, refunds and external fulfillment are not implemented. Adding them requires separate business rules and reliable integration workflows. |
-| Capacity and operations | Indexed queries, bounded batches, cursor pagination, connection limits, worker-aware readiness, structured logs and per-process auth limits. | Production throughput is unmeasured. Add load tests, metrics and tracing; coordinate auth limits across replicas when needed. Use measurements to guide caching or database scaling. |
+| Capacity and operations | Indexed queries, bounded batches, cursor pagination, request admission/deadlines, separate API/worker/probe connection pools, graceful shutdown, worker-aware readiness, structured logs and per-process auth limits. | Production throughput is unmeasured. Add load tests, metrics and tracing; coordinate auth limits across replicas when needed. Use measurements to guide caching or database scaling. |
 | Availability | Order data is persisted in PostgreSQL; transactions protect atomic writes and readiness checks database health. The supplied deployment uses one database instance. | Automated failover and backup/restore procedures are not provided or tested. Add them before making production availability commitments. |
 
 Cancellation is retry-safe: repeating it returns 200 with the owned CANCELLED
@@ -209,6 +209,21 @@ expired logout tokens using an expiry index. JSON logs include processed count,
 duration, and failures. `/health` and `/api/v1/health` are liveness probes;
 `/api/v1/ready` checks schema version 5, initialized catalog settings and local worker health. It exposes safe last-attempt/success/failure timestamps. Startup grace is two intervals; failed runs are unhealthy immediately, stale success after two intervals is unhealthy, and a successful run (including an empty queue) restores readiness. Each drain has a one-interval deadline. Quote cleanup is bounded to 500 rows per tick, eligible 24 hours after expiry; cleanup failures are logged separately.
 
+Business requests have a configurable 10-second context budget starting before
+authentication and a 16-request admission limit per process. Excess work receives
+503 with a `Retry-After` delay of 1–3 seconds; health/readiness probes bypass admission.
+API, worker/maintenance and readiness use separate pools (16/3/1 connections by
+default). All application connections have 5-second statement, 2-second lock and
+10-second idle-transaction timeouts. Order creation also retains its transaction-local
+limits. These controls bound work; production capacity remains unmeasured.
+
+On SIGTERM, readiness reports draining and new business requests receive 503.
+Accepted requests keep their contexts and may finish within the 30-second shutdown
+budget. The worker stops independently. An optional deregistration delay precedes
+HTTP shutdown; configure the deployment termination grace period to exceed that
+delay plus the shutdown budget, with a margin. Compose defaults to 65 seconds.
+A worker panic logs sanitized stack frames and initiates controlled shutdown.
+
 ## Local development and tests
 
 Follow [TESTING.md](TESTING.md) for step-by-step local setup **with or without
@@ -301,13 +316,19 @@ scripts/               API and Docker smoke tests
 | `JWT_ISSUER` | `order-management` |
 | `JWT_TOKEN_TTL` | `24h` |
 | `HTTP_ADDRESS` | `:8080` |
+| `HTTP_MAX_IN_FLIGHT` / `HTTP_REQUEST_TIMEOUT` | 16 / `10s`; admission before authentication, probes excluded |
+| `HTTP_SHUTDOWN_TIMEOUT` / `HTTP_DRAIN_DELAY` | `30s` / `0s`; shutdown timeout must cover request timeout |
+| `DB_API_MAX_OPEN` / `DB_WORKER_MAX_OPEN` / `DB_READINESS_MAX_OPEN` | 16 / 3 / 1; budget their sum across replicas |
+| `DB_CONNECT_TIMEOUT` / `DB_STATEMENT_TIMEOUT` / `DB_LOCK_TIMEOUT` | `5s` / `5s` / `2s`; lock timeout must not exceed statement timeout |
+| `DB_IDLE_TRANSACTION_TIMEOUT` / `DB_CONN_MAX_IDLE_TIME` | `10s` / `5m` |
+| `COMPOSE_STOP_GRACE_PERIOD` | `65s`; increase when configured drain/shutdown budgets require it |
 | `CURRENCY` | Optional supported base-currency initialization/assertion; must match persisted settings thereafter |
 | `STORE_REGION` | `US`; supported US, IN, GB, JP, KW, DE, FR |
 | `QUOTE_TTL` | `5m`, positive and at most 1h |
 | `AUTH_LOGIN_LIMIT` / `AUTH_REGISTER_LIMIT` | 10 / 5 attempts per window, each 1–10000 |
 | `AUTH_RATE_WINDOW` | `1m`, allowed 1s–1h |
 | `AUTH_RATE_MAX_KEYS` / `AUTH_MAX_IN_FLIGHT` | 10000 per route / 4 simultaneous auth requests; bounds 1–100000 / 1–64 |
-| `PROCESSING_INTERVAL` | `5m`; shorten only for development/tests |
+| `PROCESSING_INTERVAL` | `5m`, minimum 1s; shorten only for development/tests |
 | `PROCESSING_BATCH_SIZE` | `500`, allowed 1–10000 |
 | `ADMIN_PASSWORD` | Required only for explicit admin creation |
 | `HTTP_PORT` / `POSTGRES_PORT` | Compose host ports 8080 / 5432 |

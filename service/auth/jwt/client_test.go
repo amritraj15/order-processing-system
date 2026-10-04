@@ -187,3 +187,11 @@ func TestLoginVerifiesMissingAndInactiveAccounts(t *testing.T) {
 		t.Fatal("known failure path")
 	}
 }
+
+func TestRegistrationRejectsNULBeforeHashingOrPersistence(t *testing.T) {
+	for _, fields := range [][2]string{{"bad\x00name", "user@example.com"}, {"Customer", "bad\x00email"}} {
+		if _, err := (&Client{}).Register(context.Background(), fields[0], fields[1], "password-123"); !errors.Is(err, shared.ErrInvalid) {
+			t.Fatal(err)
+		}
+	}
+}

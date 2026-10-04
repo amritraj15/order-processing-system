@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"log/slog"
+	"order_management/internal/logging"
 	"time"
 
 	"order_management/ports"
@@ -45,7 +46,7 @@ func (w *Worker) Run(ctx context.Context) {
 				err := w.Purge(cleanupCtx)
 				cleanupCancel()
 				if err != nil {
-					w.Logger.ErrorContext(ctx, "maintenance failed", "actor_type", "system", "error_kind", "cleanup")
+					w.Logger.ErrorContext(ctx, "maintenance failed", append(logging.ErrorAttrs(err), "actor_type", "system", "operation", "maintenance")...)
 				}
 			}
 		}
@@ -59,6 +60,7 @@ func (w *Worker) Drain(ctx context.Context, cutoff time.Time) (err error) {
 		outcome := "success"
 		if err != nil {
 			outcome = "failed"
+			w.Logger.WarnContext(ctx, "processing failed", append(logging.ErrorAttrs(err), "operation", "process_pending", "run_id", runID)...)
 		}
 		w.Logger.InfoContext(ctx, "order processing finished", "actor_type", "system", "run_id", runID, "outcome", outcome, "processed", processed, "duration", w.now().Sub(started))
 	}()

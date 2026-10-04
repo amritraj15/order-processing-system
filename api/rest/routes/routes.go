@@ -23,6 +23,7 @@ type MountConfig struct {
 	Orders                        *v1.OrderHandler
 	Products                      *v1.ProductHandler
 	Readiness                     func(context.Context) error
+	Draining                      func() bool
 }
 
 func Mount(e *echo.Echo, cfg MountConfig) {
@@ -30,10 +31,13 @@ func Mount(e *echo.Echo, cfg MountConfig) {
 	e.GET("/health", health)
 	e.GET("/api/v1/health", health)
 	e.GET("/api/v1/ready", func(c *echo.Context) error {
+		draining := cfg.Draining != nil && cfg.Draining()
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Second)
 		defer cancel()
 		databaseState := "ok"
-		if cfg.Readiness == nil || cfg.Readiness(ctx) != nil {
+		if draining {
+			databaseState = "not_checked"
+		} else if cfg.Readiness == nil || cfg.Readiness(ctx) != nil {
 			databaseState = "unavailable"
 		}
 		snapshot := processing.Snapshot{State: "unavailable"}
@@ -44,6 +48,9 @@ func Mount(e *echo.Echo, cfg MountConfig) {
 		if databaseState != "ok" || (snapshot.State != "ok" && snapshot.State != "starting") {
 			status = "unavailable"
 			code = 503
+		}
+		if draining {
+			status = "draining"
 		}
 		return c.JSON(code, map[string]any{"status": status, "checks": map[string]string{"database": databaseState, "worker": snapshot.State}, "worker": map[string]any{"last_attempt_at": optionalTime(snapshot.LastAttempt), "last_success_at": optionalTime(snapshot.LastSuccess), "last_failure_at": optionalTime(snapshot.LastFailure), "running": snapshot.Running}})
 	})
