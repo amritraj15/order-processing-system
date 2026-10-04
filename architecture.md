@@ -395,8 +395,8 @@ replay. Clients must not recycle keys. No expiration date is promised by the
 current API.
 
 **Cost and boundaries:** one extra row and primary-index entry per distinct
-accepted key, with a lookup and insert on first keyed creation. The timestamp
-adds retention metadata. A keyed operation has a **10-second context deadline**
+accepted key, with a lookup and insert on first order creation. The timestamp
+adds retention metadata. Order creation has a **10-second context deadline**
 covering connection-pool acquisition through transaction completion; a shorter
 caller deadline wins. Before acquiring the advisory lock, PostgreSQL receives
 transaction-local `lock_timeout = 2s` and `statement_timeout = 5s`. These settings
@@ -721,7 +721,7 @@ ping has a 5s deadline; readiness has 2s. The worker run has one interval and
 maintenance up to 30s. Shutdown cancels the shared service context and allows up
 to 10s for HTTP shutdown/worker completion, so in-flight DB work may be cancelled.
 HTTP socket timeouts do not establish a general database statement deadline;
-keyed creation now has a 10s context budget and transaction-local 2s lock/5s
+order creation has a 10s context budget and transaction-local 2s lock/5s
 statement limits. General deadlines for other requests remain future work.
 
 Liveness says the process responds. Readiness additionally verifies schema version

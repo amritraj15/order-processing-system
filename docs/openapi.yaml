@@ -391,7 +391,7 @@ paths:
         Persist the key before sending and reuse it across retries and restarts.
         Changing keys on an items-only retry can create another order.
         The header is mandatory even when quote identity also prevents duplicate consumption.
-        Keyed creation has a 10s overall deadline, a 2s lock timeout and a 5s statement timeout.
+        Order creation has a 10s overall deadline, a 2s lock timeout and a 5s statement timeout.
         Timeout responses are 503 with Retry-After 1; retry with the same key and payload.
   "/api/v1/orders/{id}":
     parameters:
