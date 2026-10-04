@@ -36,13 +36,6 @@ Start with this README and the
 Use the [local test setup](TESTING.md) for complete paths with Docker, native
 PostgreSQL, or unit tests without a database.
 The [architecture discussion](architecture.md) provides design details.
-The remaining planning and review files retain decision history and verification
-evidence; they are optional background for a reviewer. **Full automated acceptance
-passed on 2026-10-04 (IST)**: all 22 checks, including dependency verification,
-build/vet/race tests, migration up/down/up, PostgreSQL integration, Docker smoke
-and cleanup. Native integration and deployed native smoke passed as well.
-The actual five-minute live demo remains to be performed.
-[Acceptance evidence](docs/reviews/order-processing-hardening/verification/acceptance-20261003T183917Z-2cf6c389/summary.json).
 
 ## Known limitations and next steps
 
@@ -54,7 +47,6 @@ The actual five-minute live demo remains to be performed.
 | Commerce workflows | Inventory reservation, payments, refunds and external fulfillment are outside scope. Adding them requires explicit business rules, retry-safe integrations and transactional event publication. |
 | Capacity and operations | Throughput at 10k orders/s is unmeasured. Add load tests, pending-age/throughput/DB-pool metrics and tracing before choosing caches, replicas, queues or partitioning. Auth limits are currently per-process. |
 | Availability | The supplied deployment uses one PostgreSQL instance. Add tested backup/restore and HA/failover before making availability commitments. |
-| Verification | Full automated acceptance, native integration and native deployed smoke passed. Only the actual five-minute live demo remains unverified. Use [TESTING.md](TESTING.md) to reproduce checks. |
 
 Repeated cancellation returns 200 with the owned CANCELLED order, without changing
 its timestamp. Cancellation of PROCESSING, SHIPPED or DELIVERED still returns 409.
@@ -133,11 +125,8 @@ replace admission controls or load testing. They do not cover unkeyed requests.
 (items and quote), **2 of 2 request forms (100%)**. This is not 100% test coverage,
 production traffic coverage, or a guarantee for items requests without a key.
 The frequency of the multiple-key quote case is **unmeasured**; no percentage or
-performance benefit is claimed. Service and idempotency PostgreSQL/HTTP cases passed in the user-supplied native
-run. The complete native integration rerun also passed, including the worker fixture. See the
+performance benefit is claimed. See the
 [architecture decision](architecture.md#decision-durable-idempotency-records).
-
-The [native API smoke record](docs/reviews/order-processing-hardening/verification/native-smoke-20261004/README.md) captures the successful deployed HTTP check.
 
 ## Run with Docker
 
@@ -466,7 +455,7 @@ resource and committed/replayed action outcomes without passwords, tokens, bodie
 query strings or raw infrastructure error messages. Worker logs include run ID,
 committed count, duration and success/failure, including partial progress.
 
-## Upgrade, rollback and verification status
+## Upgrade, rollback and local testing
 
 On a host with Go 1.26, Python 3, Make, network access and Docker Compose, run
 `make acceptance`. It resolves dependencies, checks the build/vet/race suite,
@@ -474,7 +463,7 @@ provisions an isolated PostgreSQL 18 container on a dynamic loopback port, check
 migration up/down/up, runs verbose integration tests (including EXPLAIN), then
 runs Docker/API smoke. It removes its own test containers/volumes and stores
 redacted logs, manifest snapshots and a JSON result under
-`docs/reviews/order-processing-hardening/verification/acceptance-<run-id>/`.
+`.cache/acceptance/acceptance-<run-id>/`.
 It does not use an existing application database. A failed prerequisite returns
 nonzero and records a blocked run, never a successful acceptance result.
 
@@ -494,9 +483,5 @@ pricing down migration refuses while rates or mismatched order currencies exist.
 After new monetary writes, use forward repair; restoring a backup loses later
 writes and is a separate operator decision. Reversibility tests use disposable data.
 
-Implementation verification is tracked in
-[the execution tracker](docs/plans/order-processing-hardening/03-todo.md) and
-[verification evidence](docs/reviews/order-processing-hardening/verification/).
-Local domain/use-case/worker tests run independently. Full build, auth/HTTP tests,
-PostgreSQL concurrency/migrations/EXPLAIN and Docker smoke require the pinned
-modules and a runnable database/container environment; unavailable checks are not passes.
+Run the local test commands in [TESTING.md](TESTING.md). Generated results stay
+in ignored `.cache/` storage and are not part of the submission.

@@ -8,3 +8,4 @@ coverage.out
 __pycache__/
 *.py[cod]
 *.log
+!docs/reviews/**/*.log

@@ -1,18 +1,11 @@
 # Order Processing System — architecture design discussion
 
 This document explains the implementation and the decisions behind it, and can
-be used during an architecture interview or the live demo. Source review date:
-2026-10-03. The system is a **layered monolith with an embedded worker and one
+be used during an architecture interview or the live demo. The system is a **layered monolith with an embedded worker and one
 PostgreSQL database**. Its main correctness mechanisms are database transactions,
 conditional state changes, immutable purchase snapshots and bounded batch work.
 
-The user-supplied native PostgreSQL 18.4 run passed build/vet, the full unit/HTTP
-race suite and the full database integration rerun, including the corrected
-worker test fixture. The native deployed API smoke also passed with automatic
-worker processing. Full Docker acceptance also passed on 2026-10-04 IST; only the five-minute demo
-remains pending. No production throughput, availability target or code coverage percentage
-has been measured. See the
-[native verification record](docs/reviews/order-processing-hardening/verification/native-postgres-20261003/README.md).
+Run the checks in [TESTING.md](TESTING.md) locally.
 
 ## 1. Requirements and design boundaries
 
@@ -140,6 +133,110 @@ depend on those abstractions and the unit of work. Bootstrap supplies concrete
 implementations. HTTP request DTOs and GORM row structs remain outside the domain.
 
 ### Data model and database safeguards
+
+The diagram shows the application tables and their declared foreign keys. Fields
+are abbreviated to highlight keys and the main business data.
+
+```mermaid
+erDiagram
+    users ||--o{ orders : places
+    users ||--o{ order_quotes : requests
+    users ||--o{ order_idempotency : scopes
+    orders ||--o{ order_items : contains
+    products ||--o{ order_items : snapshots
+    orders ||--o{ order_idempotency : resolves_to
+    order_quotes ||--o{ quote_items : contains
+    products ||--o{ quote_items : snapshots
+    fx_rates |o--o{ orders : prices
+    fx_rates |o--o{ order_quotes : prices
+    orders |o--o| order_quotes : consumed_order_id
+
+    users {
+        uuid id PK
+        varchar email UK
+        varchar role
+        boolean active
+    }
+    products {
+        uuid id PK
+        varchar sku UK
+        varchar name
+        bigint price_minor
+    }
+    orders {
+        uuid id PK
+        uuid customer_id FK
+        uuid quote_id UK "Nullable logical reference, no FK"
+        uuid rate_id FK "Nullable"
+        varchar status
+        char currency
+        bigint total_minor
+    }
+    order_items {
+        uuid order_id PK, FK
+        integer position PK
+        uuid product_id FK
+        varchar sku
+        varchar name
+        bigint quantity
+        bigint unit_price_minor
+        bigint line_total_minor
+    }
+    order_idempotency {
+        uuid customer_id PK, FK
+        varchar idempotency_key PK
+        char request_hash
+        uuid order_id FK
+        timestamptz created_at
+    }
+    order_quotes {
+        uuid id PK
+        uuid customer_id FK
+        uuid rate_id FK "Nullable"
+        uuid consumed_order_id FK, UK "Nullable"
+        char region
+        char currency
+        bigint total_minor
+        timestamptz expires_at
+    }
+    quote_items {
+        uuid quote_id PK, FK
+        integer position PK
+        uuid product_id FK
+        bigint quantity
+        bigint source_unit_price_minor
+        bigint unit_price_minor
+        bigint line_total_minor
+    }
+    fx_rates {
+        uuid id PK
+        char base_currency
+        char target_currency
+        numeric rate
+        timestamptz valid_from
+        timestamptz valid_until
+    }
+    catalog_settings {
+        smallint singleton_id PK
+        char base_currency
+        timestamptz initialized_at
+    }
+    denylisted_tokens {
+        char token_hash PK
+        timestamptz expires_at
+    }
+```
+
+`||` means exactly one, `|o`/`o|` zero or one, and `o{` zero or many.
+The item tables use composite primary keys; the database allows an empty parent,
+while order and quote creation require at least one item in application validation.
+`order_idempotency` has a composite customer/key primary key, so multiple keys
+can resolve to one order. `consumed_order_id` is nullable and unique, making the
+quote-to-consumed-order relationship optional one-to-one.
+
+`catalog_settings` is a singleton used by pricing logic, and `denylisted_tokens`
+is looked up by token hash; neither declares a foreign key. `schema_migrations`
+is migration-tool metadata and is omitted from the application model.
 
 | Table | Important fields / relationships | Safeguards |
 | --- | --- | --- |
@@ -316,7 +413,7 @@ Indefinite retention grows storage; enabling the proposed bounded retention or a
 maximum keys-per-order policy requires an explicit contract. The down migration
 refuses nonempty key data so rollback cannot silently erase retry protection.
 
-**Coverage and evidence:** this contract applies to **2/2 supported create forms
+**Coverage:** this contract applies to **2/2 supported create forms
 (100% of request forms)**. That denominator says nothing about production traffic,
 branch/line coverage, or whether clients actually supply a key. The incidence of
 multiple keys for one quote is unknown; no measured percentage justifies this
@@ -326,10 +423,7 @@ current status, unkeyed compatibility and fingerprint stability. PostgreSQL test
 cover concurrent same-key requests, transaction rollback including quote
 consumption, durable replay and guarded migration rollback; HTTP integration
 covers normalization, response codes, owner scope and multiple keys per quote.
-Those idempotency database/HTTP checks passed in the user-supplied native run,
-including timeouts and both migration upgrade variants. The complete native
-integration rerun and subsequent full Docker acceptance also passed, including
-the corrected worker fixture. Use the [local acceptance plan](TESTING.md) to reproduce.
+Use the [local acceptance plan](TESTING.md) to run these checks.
 
 ### State machine and cancellation race
 
@@ -661,20 +755,20 @@ The detailed [test plan](docs/plans/order-processing-hardening/04-test-plan.md) 
 every requirement to source tests and the [live demo](docs/plans/order-processing-hardening/05-live-demo.md).
 The following matrix explains the architectural risks covered by those tests.
 
-| Area | Existing cases | Evidence status |
-| --- | --- | --- |
-| Order domain | Multiple item snapshots, exact total 3495, UUIDv7/time values, empty/unknown/duplicate items, zero/negative quantities, line/aggregate overflow, permitted predecessor mapping. [Tests](domain/order/order_test.go). | Local race-enabled tests passed. |
-| Money and quote use case | Identity conversion, JPY/KWD precision, half-even ties, invalid rates/overflow; quote snapshot, TTL cap, foreign owner, expired quote, missing rate, replay after cleanup. [Money](domain/money/money_test.go), [quote service](service/quote/service_test.go). | Local tests passed; fake repositories do not establish DB locking behavior. |
-| Worker/configuration/health state | Full/short/empty batches, cancellation/failure, no work before initial tick in the tested cancellation case, two real short-interval ticker events and shutdown, health boundaries/recovery, concurrent health reads, configuration bounds. [Worker tests](service/processing/worker_test.go), [status](service/processing/status_test.go), [config](configs/config_test.go). | Local race-enabled tests passed, including the recurring-tick follow-up. No real five-minute timing result claimed. |
-| Auth and HTTP boundary | Registration/login/logout, invalid JWT/current role, inactive/missing-user verification, password bounds, limiter capacity/concurrency/forwarded-header behavior, JSON/content-type errors and log redaction. [JWT](service/auth/jwt/client_test.go), [middleware](api/rest/middleware/rate_limit_test.go), [server](api/rest/server_test.go). | Passed in the user-supplied native race run. |
-| Request UUID guards | Malformed/missing/nil product IDs and malformed/nil quote IDs return 422 with both the production binder and a decoding-only binder, before service access. [Handler tests](api/rest/v1/order_handler_test.go). | Passed in the user-supplied native race run. |
-| Requirements through API + PostgreSQL | Roles/ownership, catalog, multi-item order, totals, skip/cancel rules, processing/delivery, filtering/cursors, quote creation/replay, logout. [Scenario](api/rest/routes/routes_integration_test.go). | Passed in the user-supplied native PostgreSQL race run. |
-| Create retry safety | Service replay/conflict/owner scope and fingerprint tests; DB concurrency, rollback, quote aliases and key retention. [Service tests](service/order/place_handler_test.go), [DB tests](db/gorm/idempotency_integration_test.go). | Service, HTTP and PostgreSQL cases passed in the user-supplied native race run. |
-| Order persistence/concurrency | Snapshot persistence after catalog change, transactional rollback, concurrent batches/cutoff, 20 cancellation races, skipping locked rows, failed batch rollback, pending index EXPLAIN. [Tests](db/gorm/order_repository_integration_test.go). | All cases passed in the user-supplied native rerun after fixing the test-fixture UUID scan. |
-| Transition timestamps | A transition's `updated_at` matches database transaction time, independent of application timestamp generation. [Repository tests](db/gorm/order_repository_integration_test.go). | Passed in the user-supplied native PostgreSQL race run. |
-| Pricing persistence/concurrency | Eight concurrent submissions producing one order, replay after cleanup, currency mismatch, serialized initialization/rate imports, legacy adoption, expiry after lock wait, rollback if consumption fails. [Tests](db/gorm/pricing_integration_test.go). | Passed in the user-supplied native PostgreSQL race run. |
-| Migrations and cleanup | Migration round trip/legacy preservation, down guards, quote-expiry cleanup index EXPLAIN. [Tests](db/gorm/migrations_integration_test.go). | Passed in the user-supplied native PostgreSQL race run. |
-| Deployed API smoke and live timing | Docker smoke exercises auth/catalog/orders/quotes and automatic processing on a five-second tick. Live runbook verifies two real five-minute ticks and terminal states. | Native deployed smoke and full Docker acceptance passed; actual five-minute timing remains unverified. [Acceptance evidence](docs/reviews/order-processing-hardening/verification/acceptance-20261003T183917Z-2cf6c389/summary.json). [Smoke evidence](docs/reviews/order-processing-hardening/verification/native-smoke-20261004/README.md). |
+| Area | Existing cases |
+| --- | --- |
+| Order domain | Multiple item snapshots, exact total 3495, UUIDv7/time values, empty/unknown/duplicate items, zero/negative quantities, line/aggregate overflow, permitted predecessor mapping. [Tests](domain/order/order_test.go). |
+| Money and quote use case | Identity conversion, JPY/KWD precision, half-even ties, invalid rates/overflow; quote snapshot, TTL cap, foreign owner, expired quote, missing rate, replay after cleanup. [Money](domain/money/money_test.go), [quote service](service/quote/service_test.go). |
+| Worker/configuration/health state | Full/short/empty batches, cancellation/failure, no work before initial tick in the tested cancellation case, two real short-interval ticker events and shutdown, health boundaries/recovery, concurrent health reads, configuration bounds. [Worker tests](service/processing/worker_test.go), [status](service/processing/status_test.go), [config](configs/config_test.go). |
+| Auth and HTTP boundary | Registration/login/logout, invalid JWT/current role, inactive/missing-user verification, password bounds, limiter capacity/concurrency/forwarded-header behavior, JSON/content-type errors and log redaction. [JWT](service/auth/jwt/client_test.go), [middleware](api/rest/middleware/rate_limit_test.go), [server](api/rest/server_test.go). |
+| Request UUID guards | Malformed/missing/nil product IDs and malformed/nil quote IDs return 422 with both the production binder and a decoding-only binder, before service access. [Handler tests](api/rest/v1/order_handler_test.go). |
+| Requirements through API + PostgreSQL | Roles/ownership, catalog, multi-item order, totals, skip/cancel rules, processing/delivery, filtering/cursors, quote creation/replay, logout. [Scenario](api/rest/routes/routes_integration_test.go). |
+| Create retry safety | Service replay/conflict/owner scope and fingerprint tests; DB concurrency, rollback, quote aliases and key retention. [Service tests](service/order/place_handler_test.go), [DB tests](db/gorm/idempotency_integration_test.go). |
+| Order persistence/concurrency | Snapshot persistence after catalog change, transactional rollback, concurrent batches/cutoff, 20 cancellation races, skipping locked rows, failed batch rollback, pending index EXPLAIN. [Tests](db/gorm/order_repository_integration_test.go). |
+| Transition timestamps | A transition's `updated_at` matches database transaction time, independent of application timestamp generation. [Repository tests](db/gorm/order_repository_integration_test.go). |
+| Pricing persistence/concurrency | Eight concurrent submissions producing one order, replay after cleanup, currency mismatch, serialized initialization/rate imports, legacy adoption, expiry after lock wait, rollback if consumption fails. [Tests](db/gorm/pricing_integration_test.go). |
+| Migrations and cleanup | Migration round trip/legacy preservation, down guards, quote-expiry cleanup index EXPLAIN. [Tests](db/gorm/migrations_integration_test.go). |
+| Deployed API smoke and live timing | Docker smoke exercises auth/catalog/orders/quotes and automatic processing on a five-second tick. The live runbook checks automatic transitions and preserved terminal states. |
 
 The controlled API integration test is designed to verify successful pending cancellation. The
 fast Docker smoke accepts 200 or 409 for cancellation because its worker can win
@@ -682,9 +776,8 @@ the race; that flexible smoke result alone is insufficient evidence of successfu
 cancellation. The pending query-plan fixture includes 20000 delivered and 1201
 pending rows; it tests query behavior, not production throughput.
 
-Use `make acceptance` on a capable host for dependency, build, vet, race,
-migration, PostgreSQL integration and Docker checks. It preserves per-run logs
-and a result summary. The runner currently does not produce a statement-coverage
+Use `make acceptance` locally for dependency, build, vet, race,
+migration, PostgreSQL integration and Docker checks. It stores diagnostics in ignored `.cache/acceptance/`. The runner currently does not produce a statement-coverage
 profile. If a percentage is requested, run the following after dependency setup
 against a dedicated disposable DB with `TEST_DATABASE_URL` configured:
 
@@ -713,13 +806,12 @@ concurrency assertions. No full-repository coverage percentage is available now.
 | Token revocation, bounded auth work and strict input handling | Limits authentication abuse and avoids trusting client-controlled identity/prices. |
 | Worker-aware readiness and correlated structured logs | Makes failed/stale processing visible alongside API availability. |
 | Explicit migrations, legacy adoption checks and rollback guards | Avoids silently guessing original currency or discarding new pricing provenance. |
-| Isolated acceptance runner, coverage matrix and live-demo runbook | Makes requirement verification repeatable with retained evidence. |
+| Isolated acceptance runner, coverage matrix and live-demo runbook | Makes local requirement checks repeatable. |
 
 The following are **future work**, not claims about the delivered implementation:
 
 | Priority | Enhancement | Trigger / validation |
 | --- | --- | --- |
-| Live presentation | Run the actual five-minute demonstration and retain its timing evidence. | Full automated acceptance/manifests already passed; the fast smoke is not a five-minute measurement. |
 | Before promising load targets | Add metrics/tracing, representative load/soak tests and explicit latency/backlog objectives. | Use measured bottlenecks; no numerical throughput promise yet. |
 | Before multi-replica/global scheduling commitments | Define global cadence, separate worker lifecycle if needed, use DB time for cutoff, and coordinate scheduling/recovery. | Test staggered starts, repeated restarts, clock skew and loss of a scheduler. |
 | Before broad client retries | Require callers to reuse keys and retain the passing idempotency regressions in CI. | Exercise lost responses, concurrent conflicting reuse and crash recovery on a real database. |
@@ -740,4 +832,4 @@ The following are **future work**, not claims about the delivered implementation
 | What happens if the customer retries? | Same customer/key and payload return the original order with 200; conflicting reuse returns 409. Quote ID replay also works without a key. Unkeyed items-only requests can duplicate. |
 | What happens when the region changes? | Obtain a new regional quote. Existing catalog denomination, quotes and accepted orders retain their snapshots. |
 | Can it scale horizontally? | DB coordination supports concurrent application instances, but shared limits, connection budgets, deployment configuration and global scheduling semantics need additional work. |
-| What is actually proven? | The full native unit/integration race suite passed, including the fixed worker fixture, idempotency, timeouts and migration guards. Native deployed smoke and full Docker acceptance also passed; the actual five-minute demo remains pending. |
+| How can a reviewer test it? | Run `make acceptance` for the full local suite, or follow TESTING.md for native PostgreSQL and unit-only options. |

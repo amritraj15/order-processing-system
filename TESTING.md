@@ -2,6 +2,11 @@
 
 Choose one route below and run commands from the repository root. Use a **Bash
 session** for these examples, including on macOS where the default shell is zsh.
+Start a child shell with `bash --noprofile --norc` and wait for its prompt before
+pasting setup. If strict options were already enabled in your main shell, run
+`set +e` and `set +u` there first. Do not use `exec bash`: a child shell lets a
+failed strict-mode command return to the original terminal. The live-demo runbook
+includes the separate launch block and an exit diagnostic.
 The [requirement matrix](docs/plans/order-processing-hardening/04-test-plan.md)
 lists the individual test cases and expected API results.
 
@@ -15,12 +20,6 @@ Race-enabled Go tests also need a supported platform and a C compiler/toolchain.
 Use the pinned module versions; do not downgrade dependencies to match a cache.
 Go commands use readonly manifests after `go mod tidy`, which may update
 `go.mod`/`go.sum`; review those changes before committing.
-
-**Execution status, 2026-10-04 IST:** full Docker acceptance passed all 22 stages,
-including the complete migration round trip, PostgreSQL integration, Docker API
-smoke and cleanup. Native race/integration and deployed native smoke also passed.
-The actual five-minute live demo remains unverified.
-[Acceptance evidence](docs/reviews/order-processing-hardening/verification/acceptance-20261003T183917Z-2cf6c389/summary.json).
 
 If running individual commands in interactive zsh, omit inline `# comments` or
 first enable `setopt INTERACTIVE_COMMENTS`. Use `set -o pipefail` before piping
@@ -45,7 +44,7 @@ runner creates an isolated PostgreSQL 18 container, runs migration up/down/up,
 runs verbose integration tests and starts a separate Compose stack for API smoke.
 It provisions fixtures and removes its own test containers/volumes. It stores
 `summary.json` and command logs under
-`docs/reviews/order-processing-hardening/verification/acceptance-<run-id>/`.
+`.cache/acceptance/acceptance-<run-id>/`.
 
 The PostgreSQL acceptance container uses a dynamic loopback port; Docker smoke
 defaults to HTTP 18080 and PostgreSQL 15432. If those smoke ports are occupied:
@@ -201,7 +200,7 @@ rules, transaction rollback, concurrent worker/cancellation, quote expiry/replay
 database timestamps, keyed create concurrency/conflicts/rollback, repeated cancellation,
 migration guards and EXPLAIN index assertions. `-v` retains
 the query plans. `make integration` is also available, but the explicit command
-above forces a fresh run and retains verbose evidence.
+above forces a fresh run and prints verbose local diagnostics.
 
 ### B4. Start the native API and exercise the real worker
 
@@ -264,22 +263,19 @@ the same:
 | Runbook part | Native equivalent |
 | --- | --- |
 | Compose preparation/admin/rate commands | Already performed by B2–B4 with the substitutions above. Do not run the Compose setup block. |
-| Request-helper setup | Set `DEMO_TMP="$(mktemp -d /tmp/orders-live.XXXXXX)"`, `DEMO_BODY="$DEMO_TMP/response.json"`, and `EVIDENCE="$LOCAL_RESULTS/live"`; create `EVIDENCE`. Keep `API_URL` from B4. Paste the runbook's `api()` function and its login/customer/product fixture block. |
+| Request-helper setup | Set `DEMO_TMP="$(mktemp -d /tmp/orders-live.XXXXXX)"`, `DEMO_BODY="$DEMO_TMP/response.json"`. Keep `API_URL` from B4. Paste the runbook's `api()` function and its login/customer/product fixture block. |
 | D0 API restart | Stop the recorded API PID and wait for it; set `PROCESSING_INTERVAL=5m` and restart `bin/orders server` as below. Repeat D0's HTTP readiness assertions. |
-| D0 interval and startup evidence | Record `$PROCESSING_INTERVAL` in `interval.txt` and the timestamp just before native startup in `api-started-at.txt` as below. |
 | D1–D5 and D7 | Run the API commands unchanged in order; D7 follows D6. |
-| D6 logs | Replace `dc logs ...` with `cp "$LOCAL_RESULTS/api.log" "$EVIDENCE/api.log"`. Run the same polling, terminal-state and Python timing checks. The start timestamp now represents native launch, not a container. |
+| D6 | Run the polling and terminal-state assertions; no Compose commands are needed. |
 | Compose cleanup | Use B6 below and remove the temporary raw-response directory you created. |
 
-Native replacement for D0's restart/interval/startup commands, after creating the
+Native replacement for D0's restart commands, after creating the
 runbook's customer/product fixtures:
 
 ```bash
 kill -TERM "$LOCAL_API_PID"
 wait "$LOCAL_API_PID"
 export PROCESSING_INTERVAL=5m
-printf '%s\n' "$PROCESSING_INTERVAL" > "$EVIDENCE/interval.txt"
-date -u +%FT%TZ > "$EVIDENCE/api-started-at.txt"
 bin/orders server > "$LOCAL_RESULTS/api.log" 2>&1 &
 LOCAL_API_PID=$!
 ```
@@ -299,7 +295,7 @@ fails. No system PostgreSQL service is stopped.
 cleanup_local
 trap - EXIT
 cp "$LOCAL_PG_ROOT/postgres.log" "$LOCAL_RESULTS/postgres.log"
-printf 'Evidence: %s\nStopped PostgreSQL data: %s\n' "$LOCAL_RESULTS" "$LOCAL_PG_ROOT"
+printf 'Local results: %s\nStopped PostgreSQL data: %s\n' "$LOCAL_RESULTS" "$LOCAL_PG_ROOT"
 unset PGPASSWORD DATABASE_URL TEST_DATABASE_URL MIGRATION_DATABASE_URL
 unset JWT_SECRET ADMIN_PASSWORD
 ```
@@ -311,17 +307,16 @@ rather than repeating admin creation or overlapping rate imports in the old DB.
 
 ## Acceptance checklist and troubleshooting
 
-| Check | Required evidence / expected result |
+| Check | Expected local result |
 | --- | --- |
 | Build/vet/unit | Exit 0; fresh tests; no compilation failure. |
 | PostgreSQL integration | Exit 0 with integration tag; retain concurrency, rollback, clock and EXPLAIN results. |
-| Migration round trip | Up → down three versions → up on the disposable migration DB. |
+| Migration round trip | Up → down five versions → up on the disposable migration DB. |
 | API smoke | Passing assertion output, readiness response and worker success log; note interval 5s. |
-| Real cadence, if demonstrated | Two successful attempts roughly 300s apart and automatically advanced orders; retain the live checklist. |
+| Real cadence, if demonstrated | Orders automatically advance on successive worker runs; cancelled orders remain cancelled. |
 | Container packaging | Required only for route A; route B must report this as NOT RUN. |
 
-Record date, source revision, tool versions, route, command exit codes and evidence
-directory. Mark each check PASS, FAIL, BLOCKED or NOT RUN. Route C alone is not full
+Route C alone is not full
 acceptance; a successful native run does not certify the Docker deployment.
 
 | Symptom | Next step |

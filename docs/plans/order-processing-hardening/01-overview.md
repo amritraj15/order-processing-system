@@ -1,18 +1,17 @@
 # Order Processing Hardening — Overview
 
 - Status: Approved
-- Approval: user approved items 2–4, then the refined currency item 1, on 2026-10-03.
+- Approval: user approved items 2–4, then the refined currency item 1.
 - Slug: `order-processing-hardening`
 - Form: Full Phase 1; cross-layer remediation with persistence and API implications.
-- Author/date: Codex / 2026-10-03
 - Source: [implementation audit](../../reviews/order-processing-system/00-review-20261003.md).
 - Guidance: [AGENTS.md](../../../AGENTS.md); skills: `plan-workflow`, `plan-review`, `backend-go`.
 
 ## Request and problem
 
 Turn the audit's two blockers and seven risks into an in-scope remediation plan.
-The backend exists, but full execution evidence is missing and catalog currency,
-worker visibility, auth safeguards, traceability and smoke tests need attention.
+The design covers catalog currency, worker visibility, authentication safeguards,
+traceability and repeatable local smoke tests.
 Earlier approval of the base application does not imply approval of these fixes.
 
 ## Goals and customer behavior
@@ -68,7 +67,7 @@ This adds limited multi-currency quoting to the original assignment; changing th
 ## Risks and dependencies
 
 Existing catalog rows do not record currency; adoption must not guess a denomination.
-Dependency download, Docker access and PostgreSQL execution were previously unavailable.
+Local checks require dependency downloads and PostgreSQL; Docker is required for container checks.
 Worker readiness needs startup/staleness rules to avoid false alarms; limiter storage must be bounded.
 Owners: Codex for implementation/design and evidence; environment access is an external prerequisite.
 Planning estimate: 0.5–1 engineering day; implementation/validation: 3–5 days, excluding access delays.
@@ -84,4 +83,4 @@ These are rough effort estimates, not delivery commitments; refine after Phase 2
 ## Review
 
 [Nine-persona review](00-review-20261003.md). All four directions are approved; do not request overview approval again.
-[Detailed engineering design](02-engineering-doc.md) resolves the engineering questions and has its own review gate. Implementation is present; full acceptance remains blocked as recorded in the execution tracker.
+[Detailed engineering design](02-engineering-doc.md) resolves the engineering questions and has its own review gate. See the implementation checklist and local test instructions.

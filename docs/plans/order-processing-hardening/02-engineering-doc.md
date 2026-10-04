@@ -1,9 +1,7 @@
 # Engineering Design: Order Processing Hardening
 
 - Status: Approved
-- Approved by user: 2026-10-03
 - Slug: `order-processing-hardening`
-- Author/date: Codex / 2026-10-03
 - Basis: [approved overview](01-overview.md), [review](00-review-20261003.md), [project guidance](../../../AGENTS.md).
 - Skills consulted: `plan-workflow` (phase gates/serial ownership), `plan-review` (nine lenses), `backend-go` (inward dependencies, transaction repositories, Echo v5, context/errors/assertions/testing).
 - Adaptations retained: top-level packages, environment config, manual OpenAPI, standard-library fakes; no event outbox because no events are published.
@@ -123,9 +121,9 @@ Deploy in maintenance: stop old writers/workers, back up data, apply 000002 then
 
 Rollback: before new quote/multi-currency writes, restore the previous binary only with its matching schema/config after backing up. The 000003 down migration refuses while quotes or non-legacy orders exist; 000002 down refuses while rate rows or a differing order currency remain. Test reversibility on an empty disposable database. After new monetary writes, prefer forward repair; restoring a pre-upgrade backup requires explicit acceptance of losing later writes. Never claim an old binary safely preserves new pricing provenance. No automated destructive data cleanup is part of rollback.
 
-## 9. Verification and evidence
+## 9. Local test coverage
 
-| Layer | Required cases / evidence |
+| Layer | Required test cases |
 | --- | --- |
 | Pure unit | Decimal parsing; 0/2/3-digit currencies; half-even ties; base identity; repeated region changes; zero-rounded/overflow rejection; totals. Quote expiry capped by rate validity; immutable source/target snapshots. |
 | Auth/HTTP unit | Known/missing/inactive bcrypt path, generic errors, limiter boundaries/reset/concurrent admission/map exhaustion/in-flight release/spoofed forwarded headers; quote DTO exclusive forms and error mapping; safe request/log fields and committed/replayed outcomes. |
@@ -136,7 +134,8 @@ Rollback: before new quote/multi-currency writes, restore the previous binary on
 
 At implementation start, recheck Go/dependency download, Docker and test DB capabilities. Run `go mod tidy` once to resolve manifests, then `go build -mod=readonly ./cmd/orders`, `go vet -mod=readonly ./...`, `go test -mod=readonly -race ./...`, and `go test -mod=readonly -race -tags=integration ./...` with a dedicated TEST_DATABASE_URL. Run `make fmt-check`, disposable migration checks and `make smoke-docker`. Tighten Make/Docker commands to readonly resolution after tidy; remove image-build `go mod tidy` so missing manifests fail reproducibly.
 
-Write commands, tool versions, exit statuses and sanitized output/EXPLAIN paths under `docs/reviews/order-processing-hardening/verification/` during execution; never include credentials. No Git metadata currently exists, so use evidence/file links and mark commit links unavailable. External access failures leave B1 blocked; do useful unit/code work where feasible but never declare full acceptance. No live FX/payment tests apply because these integrations are excluded.
+Run checks locally using [TESTING.md](../../../TESTING.md). Generated diagnostics
+belong in ignored `.cache/` storage and are not submission documents.
 
 ## 10. Serial execution and task list
 
@@ -161,12 +160,13 @@ One owner, **Codex**, performs every task serially. No delegated agents. Expecte
 | T6 | Dummy verification, bounded limiter and auth regression tests | Codex | `service/auth/jwt`, `domain/user`, `api/rest/middleware` | T5 |
 | T7 | Safe contextual logs and adapter/error conformance across changed layers | Codex | `internal/logging`, `api/rest`, `service`, `db/gorm`, `cmd/orders` | T6 |
 | T8 | Serial config/CLI/HTTP/bootstrap wiring, docs and reproducible build config | Codex | `configs`, `.env.example`, `docker-compose.yml`, `Dockerfile`, `Makefile`, `cmd/orders`, `internal/bootstrap`, `api/rest/routes`, `docs/openapi.yaml`, `README.md`, `AGENTS.md` | T4–T7 |
-| T9 | Deterministic smoke + full acceptance/EXPLAIN evidence; update original finding status | Codex | `scripts`, integration tests, verification directory, plan/review docs | T8 |
+| T9 | Deterministic smoke + local acceptance and EXPLAIN checks | Codex | `scripts`, integration tests, local test instructions | T8 |
 
-T3 live tests may remain blocked while T4–T8 progress; blockers must carry into T9. Each task includes relevant tests, not just implementation. T9 closes B1/B2/R1–R6 only from evidence. After engineering approval, derive `03-todo.md` directly from T1–T9 and maintain actual status/links; this completes R0's process artifacts without pretending implementation is done.
+Each implementation task includes its relevant tests. Follow the local test plan
+for dependencies, database setup and the complete acceptance command.
 
 ## 11. Review
 
-Q1–Q4 have proposed concrete answers in sections 3–9; no unresolved product question is required for execution beyond this design's approval. [Persona review](00-review-20261003.md) records remaining delivery risks and their mitigations. Engineering and overview approvals are recorded; implementation is authorized. Source implementation is now present; final acceptance is tracked in `03-todo.md` and remains blocked by dependency/runtime availability.
+Q1–Q4 have proposed concrete answers in sections 3–9; no unresolved product question is required for execution beyond this design's approval. [Persona review](00-review-20261003.md) records remaining delivery risks and their mitigations. Engineering and overview approvals are recorded; implementation is authorized. The implementation checklist is in `03-todo.md`; run acceptance locally using `TESTING.md`.
 
 Primary references: [PostgreSQL READ COMMITTED locking](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED) explains visibility after a competing row update; [PostgreSQL current date/time functions](https://www.postgresql.org/docs/18/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT) distinguishes transaction timestamps from actual clock time; [CLDR currency metadata](https://unicode.org/reports/tr35/tr35-numbers.html#Supplemental_Currency_Data) describes territory associations and currency precision. Market support, half-even pricing, rate validity and quote behavior above are application design decisions.

@@ -1,3 +1,0 @@
-Command: ["docker", "compose", "version"]
-Exit: 0
-Docker Compose version v5.3.1

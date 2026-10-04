@@ -1,4 +1,0 @@
-Command: ["make", "integration"]
-Exit: 2
-test -n "$TEST_DATABASE_URL"
-make: *** [integration] Error 1

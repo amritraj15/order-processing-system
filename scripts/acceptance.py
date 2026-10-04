@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def main():
     run_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
-    output = ROOT / "docs/reviews/order-processing-hardening/verification" / ("acceptance-" + run_id)
+    output = ROOT / ".cache/acceptance" / ("acceptance-" + run_id)
     output.mkdir(parents=True)
     summary = {"run_id": run_id, "status": "running", "checks": [], "cleanup": "not needed"}
     env = os.environ.copy()
@@ -160,7 +160,7 @@ def main():
         if binary.exists():
             binary.unlink()
         save()
-    print("Acceptance " + summary["status"] + ". Evidence: " + str(output), flush=True)
+    print("Acceptance " + summary["status"] + ". Local results: " + str(output), flush=True)
     return 0 if summary["status"] == "passed" else 1
 
 
