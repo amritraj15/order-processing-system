@@ -6,6 +6,8 @@ PostgreSQL database**. Its main correctness mechanisms are database transactions
 conditional state changes, immutable purchase snapshots and bounded batch work.
 
 Run the checks in [TESTING.md](TESTING.md) locally.
+For each file's responsibility, functions and requirement mapping, see the
+[code walkthrough](docs/code-map.md).
 
 ## 1. Requirements and design boundaries
 
