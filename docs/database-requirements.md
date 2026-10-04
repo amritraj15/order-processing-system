@@ -7,6 +7,8 @@ catalog pricing, authentication, retry protection and regional pricing.
 This reference follows the [database migrations](../db/migrations). See
 [architecture.md](../architecture.md) for the ER diagram and design decisions,
 and the [code walkthrough](code-map.md) for the methods using these tables.
+For three customers placing multiple orders and the resulting table changes, see
+the [order lifecycle example](order-lifecycle-walkthrough.md).
 
 ## Requirement key
 

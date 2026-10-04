@@ -865,3 +865,9 @@ This reference connects files and callable declarations to requirements. It cont
 **Mapping:** All; database reference.
 
 Explains each application table and column, important constraints and indexes, and their relationship to the requirements and supporting features. It contains no runtime methods.
+
+### [docs/order-lifecycle-walkthrough.md](order-lifecycle-walkthrough.md)
+
+**Mapping:** All; example walkthrough.
+
+Follows three customers and five multi-item orders through creation, retries, quotes, cancellation, processing, delivery and cleanup. Shows table reads/writes and final row counts. It contains no runtime methods.
